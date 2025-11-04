@@ -1072,3 +1072,334 @@ function viewUncategorizedItems() {
   
   ui.alert("Uncategorized Items", report, ui.ButtonSet.OK);
 }
+
+// ============================================
+// SIGNUP TO FIRST VISIT ANALYSIS
+// ============================================
+
+/**
+ * Analyze time between signup and first visit
+ */
+function runSignupToVisitAnalysis() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var ui = SpreadsheetApp.getUi();
+
+  var dateSettings = getDateRangeSettings();
+
+  // Get Customer List (signup data)
+  var customerListSheet = ss.getSheetByName("Customer List");
+  if (!customerListSheet) {
+    ui.alert('Error', 'Cannot find "Customer List" sheet!', ui.ButtonSet.OK);
+    return;
+  }
+
+  var customerListData = customerListSheet.getDataRange().getValues();
+  var customerListHeaders = customerListData[0];
+
+  var clEmailCol = customerListHeaders.indexOf("Email");
+  var clDateAddedCol = customerListHeaders.indexOf("Date Added");
+
+  if (clEmailCol === -1 || clDateAddedCol === -1) {
+    ui.alert('Error', 'Cannot find required columns in Customer List sheet (Email, Date Added)', ui.ButtonSet.OK);
+    return;
+  }
+
+  // Build lookup: email -> date added
+  var signupDateByEmail = {};
+  for (var i = 1; i < customerListData.length; i++) {
+    var email = normalizeEmail(customerListData[i][clEmailCol]);
+    var dateAdded = customerListData[i][clDateAddedCol];
+
+    if (email && dateAdded) {
+      signupDateByEmail[email] = dateAdded;
+    }
+  }
+
+  // Get Square Customer Export (first visit data)
+  var customerSheet = ss.getSheetByName("Square Customer Export");
+  if (!customerSheet) {
+    ui.alert('Error', 'Cannot find "Square Customer Export" sheet!', ui.ButtonSet.OK);
+    return;
+  }
+
+  var customerData = customerSheet.getDataRange().getValues();
+  var customerHeaders = customerData[0];
+
+  var emailCol = customerHeaders.indexOf("Email Address");
+  var firstVisitCol = customerHeaders.indexOf("First Visit");
+  var firstNameCol = customerHeaders.indexOf("First Name");
+  var lastNameCol = customerHeaders.indexOf("Last Name");
+
+  if (emailCol === -1 || firstVisitCol === -1) {
+    ui.alert('Error', 'Cannot find required columns in Square Customer Export (Email Address, First Visit)', ui.ButtonSet.OK);
+    return;
+  }
+
+  // Calculate time differences
+  var daysDifferences = [];
+  var signedUpNotVisited = 0;
+  var totalSignups = 0;
+  var signupsWithKnownDate = 0;
+  var signupsWithVisits = 0;
+
+  var detailedData = []; // For output sheet
+
+  for (var i = 1; i < customerData.length; i++) {
+    var email = normalizeEmail(customerData[i][emailCol]);
+    var firstVisit = customerData[i][firstVisitCol];
+    var firstName = customerData[i][firstNameCol] || "";
+    var lastName = customerData[i][lastNameCol] || "";
+    var customerName = (firstName + " " + lastName).trim() || email;
+
+    totalSignups++;
+
+    // Check if we have signup date
+    var signupDate = signupDateByEmail[email];
+
+    if (!signupDate) {
+      // No signup date in Customer List - skip from percentile calculation
+      detailedData.push([
+        customerName,
+        email,
+        "Unknown",
+        firstVisit ? firstVisit : "Not visited",
+        firstVisit ? "N/A (no signup date)" : "Not visited"
+      ]);
+
+      if (!firstVisit) {
+        signedUpNotVisited++;
+      }
+      continue;
+    }
+
+    signupsWithKnownDate++;
+
+    if (!firstVisit || firstVisit === "") {
+      // Signed up but never visited
+      signedUpNotVisited++;
+      detailedData.push([
+        customerName,
+        email,
+        signupDate,
+        "Not visited",
+        "Not visited"
+      ]);
+    } else {
+      // Calculate days between signup and first visit
+      signupsWithVisits++;
+      var signupDateObj = new Date(signupDate);
+      var firstVisitObj = new Date(firstVisit);
+
+      var daysDiff = Math.round((firstVisitObj - signupDateObj) / (1000 * 60 * 60 * 24));
+
+      // Only include non-negative values (visit after signup)
+      if (daysDiff >= 0) {
+        daysDifferences.push(daysDiff);
+
+        detailedData.push([
+          customerName,
+          email,
+          signupDate,
+          firstVisit,
+          daysDiff + " days"
+        ]);
+      } else {
+        // Visit before signup (data issue)
+        detailedData.push([
+          customerName,
+          email,
+          signupDate,
+          firstVisit,
+          "⚠️ Visit before signup (" + daysDiff + " days)"
+        ]);
+      }
+    }
+  }
+
+  // Calculate percentiles
+  var percentiles = {
+    p25: 0,
+    p50: 0,
+    p75: 0,
+    p90: 0
+  };
+
+  if (daysDifferences.length > 0) {
+    daysDifferences.sort(function(a, b) { return a - b; });
+
+    percentiles.p25 = daysDifferences[Math.floor(daysDifferences.length * 0.25)];
+    percentiles.p50 = daysDifferences[Math.floor(daysDifferences.length * 0.50)];
+    percentiles.p75 = daysDifferences[Math.floor(daysDifferences.length * 0.75)];
+    percentiles.p90 = daysDifferences[Math.floor(daysDifferences.length * 0.90)];
+  }
+
+  // Create output sheet
+  var reportSheet = ss.getSheetByName("Signup to Visit Analysis");
+  if (reportSheet) {
+    reportSheet.clear();
+  } else {
+    reportSheet = ss.insertSheet("Signup to Visit Analysis");
+  }
+
+  // === HEADER ===
+  reportSheet.getRange("A1:E1").merge();
+  reportSheet.getRange("A1").setValue("📊 SIGNUP TO FIRST VISIT ANALYSIS");
+  reportSheet.getRange("A1").setFontSize(16).setFontWeight("bold").setHorizontalAlignment("center");
+  reportSheet.getRange("A1").setBackground("#4285F4").setFontColor("white");
+
+  reportSheet.getRange("A2:E2").merge();
+  reportSheet.getRange("A2").setValue("Date Range: " + dateSettings.label + " | Generated: " + new Date());
+  reportSheet.getRange("A2").setFontSize(10).setHorizontalAlignment("center").setBackground("#e8f0fe");
+
+  var currentRow = 4;
+
+  // === SUMMARY SECTION ===
+  reportSheet.getRange(currentRow, 1, 1, 5).merge();
+  reportSheet.getRange(currentRow, 1).setValue("📈 SUMMARY STATISTICS");
+  reportSheet.getRange(currentRow, 1).setFontWeight("bold").setFontSize(12).setBackground("#34A853").setFontColor("white");
+  currentRow++;
+
+  var summaryData = [
+    ["Total Signups (Square Customer Export)", totalSignups, "", "", ""],
+    ["Signups with Known Date Added", signupsWithKnownDate, "", "", ""],
+    ["Signups with Visits", signupsWithVisits, "", "", ""],
+    ["Signups WITHOUT Visits", signedUpNotVisited, "", "", ""],
+    ["Conversion Rate (Visited / Total)", signupsWithVisits > 0 ? ((signupsWithVisits / totalSignups) * 100).toFixed(1) + "%" : "0%", "", "", ""]
+  ];
+
+  reportSheet.getRange(currentRow, 1, summaryData.length, 5).setValues(summaryData);
+  reportSheet.getRange(currentRow, 1, summaryData.length, 5).setBorder(true, true, true, true, true, true);
+  reportSheet.getRange(currentRow, 1, summaryData.length, 1).setBackground("#d9ead3");
+  currentRow += summaryData.length + 2;
+
+  // === PERCENTILES SECTION ===
+  reportSheet.getRange(currentRow, 1, 1, 5).merge();
+  reportSheet.getRange(currentRow, 1).setValue("📊 TIME TO FIRST VISIT (Days)");
+  reportSheet.getRange(currentRow, 1).setFontWeight("bold").setFontSize(12).setBackground("#FBBC04").setFontColor("white");
+  currentRow++;
+
+  var percentilesData = [
+    ["25th Percentile", percentiles.p25 + " days", "", "75th Percentile", percentiles.p75 + " days"],
+    ["50th Percentile (Median)", percentiles.p50 + " days", "", "90th Percentile", percentiles.p90 + " days"],
+    ["Minimum", daysDifferences.length > 0 ? daysDifferences[0] + " days" : "N/A", "", "Maximum", daysDifferences.length > 0 ? daysDifferences[daysDifferences.length - 1] + " days" : "N/A"],
+    ["Average", daysDifferences.length > 0 ? (daysDifferences.reduce(function(a, b) { return a + b; }, 0) / daysDifferences.length).toFixed(1) + " days" : "N/A", "", "Sample Size", daysDifferences.length]
+  ];
+
+  reportSheet.getRange(currentRow, 1, percentilesData.length, 5).setValues(percentilesData);
+  reportSheet.getRange(currentRow, 1, percentilesData.length, 5).setBorder(true, true, true, true, true, true);
+  reportSheet.getRange(currentRow, 1, percentilesData.length, 1).setBackground("#fef7e0");
+  reportSheet.getRange(currentRow, 4, percentilesData.length, 1).setBackground("#fef7e0");
+  currentRow += percentilesData.length + 2;
+
+  // === KEY INSIGHTS ===
+  reportSheet.getRange(currentRow, 1, 1, 5).merge();
+  reportSheet.getRange(currentRow, 1).setValue("💡 KEY INSIGHTS");
+  reportSheet.getRange(currentRow, 1).setFontWeight("bold").setFontSize(12).setBackground("#EA4335").setFontColor("white");
+  currentRow++;
+
+  var insights = [];
+
+  if (signedUpNotVisited > 0) {
+    var notVisitedPct = ((signedUpNotVisited / totalSignups) * 100).toFixed(1);
+    insights.push(["• " + signedUpNotVisited + " people (" + notVisitedPct + "%) signed up but haven't visited yet", "", "", "", ""]);
+  }
+
+  if (percentiles.p50 === 0) {
+    insights.push(["• Median time to first visit is SAME DAY - excellent conversion!", "", "", "", ""]);
+  } else if (percentiles.p50 <= 7) {
+    insights.push(["• Median time to first visit is " + percentiles.p50 + " days - strong conversion!", "", "", "", ""]);
+  } else if (percentiles.p50 <= 30) {
+    insights.push(["• Median time to first visit is " + percentiles.p50 + " days - good engagement", "", "", "", ""]);
+  } else {
+    insights.push(["• Median time to first visit is " + percentiles.p50 + " days - consider follow-up campaigns", "", "", "", ""]);
+  }
+
+  if (percentiles.p90 > 90) {
+    insights.push(["• 10% of customers take " + percentiles.p90 + "+ days to visit - opportunity for nurture campaigns", "", "", "", ""]);
+  }
+
+  var conversionRate = (signupsWithVisits / totalSignups) * 100;
+  if (conversionRate >= 80) {
+    insights.push(["• " + conversionRate.toFixed(1) + "% conversion rate - excellent!", "", "", "", ""]);
+  } else if (conversionRate >= 60) {
+    insights.push(["• " + conversionRate.toFixed(1) + "% conversion rate - good, but room for improvement", "", "", "", ""]);
+  } else {
+    insights.push(["• " + conversionRate.toFixed(1) + "% conversion rate - focus on converting signups to visits", "", "", "", ""]);
+  }
+
+  reportSheet.getRange(currentRow, 1, insights.length, 5).setValues(insights);
+  reportSheet.getRange(currentRow, 1, insights.length, 5).setBackground("#f4cccc");
+  currentRow += insights.length + 2;
+
+  // === DETAILED DATA SECTION ===
+  reportSheet.getRange(currentRow, 1, 1, 5).merge();
+  reportSheet.getRange(currentRow, 1).setValue("📋 DETAILED CUSTOMER DATA");
+  reportSheet.getRange(currentRow, 1).setFontWeight("bold").setFontSize(12).setBackground("#9C27B0").setFontColor("white");
+  currentRow++;
+
+  var detailedHeaders = ["Customer Name", "Email", "Signup Date", "First Visit", "Days to Visit"];
+  reportSheet.getRange(currentRow, 1, 1, detailedHeaders.length).setValues([detailedHeaders]);
+  reportSheet.getRange(currentRow, 1, 1, detailedHeaders.length).setFontWeight("bold").setBackground("#E8E8E8");
+  currentRow++;
+
+  if (detailedData.length > 0) {
+    // Sort by days to visit (ascending, with "Not visited" at end)
+    detailedData.sort(function(a, b) {
+      var aVal = a[4];
+      var bVal = b[4];
+
+      // Handle special cases
+      if (aVal === "Not visited") return 1;
+      if (bVal === "Not visited") return -1;
+      if (typeof aVal === "string" && aVal.indexOf("N/A") >= 0) return 1;
+      if (typeof bVal === "string" && bVal.indexOf("N/A") >= 0) return -1;
+      if (typeof aVal === "string" && aVal.indexOf("⚠️") >= 0) return 1;
+      if (typeof bVal === "string" && bVal.indexOf("⚠️") >= 0) return -1;
+
+      // Extract numeric value
+      var aNum = parseInt(aVal);
+      var bNum = parseInt(bVal);
+
+      return aNum - bNum;
+    });
+
+    reportSheet.getRange(currentRow, 1, detailedData.length, detailedHeaders.length).setValues(detailedData);
+    reportSheet.getRange(currentRow, 1, detailedData.length, detailedHeaders.length).setBorder(true, true, true, true, true, true);
+
+    // Color code rows
+    for (var i = 0; i < detailedData.length; i++) {
+      var row = currentRow + i;
+      var daysValue = detailedData[i][4];
+
+      if (daysValue === "Not visited") {
+        reportSheet.getRange(row, 1, 1, detailedHeaders.length).setBackground("#f4cccc");
+      } else if (typeof daysValue === "string" && daysValue.indexOf("⚠️") >= 0) {
+        reportSheet.getRange(row, 1, 1, detailedHeaders.length).setBackground("#fce8e6");
+      } else if (typeof daysValue === "string" && daysValue.indexOf("N/A") >= 0) {
+        reportSheet.getRange(row, 1, 1, detailedHeaders.length).setBackground("#f5f5f5");
+      }
+    }
+  }
+
+  // Auto-resize columns
+  for (var i = 1; i <= detailedHeaders.length; i++) {
+    reportSheet.autoResizeColumn(i);
+  }
+
+  reportSheet.setFrozenRows(4);
+  ss.setActiveSheet(reportSheet);
+
+  // Show summary alert
+  var summary = '✅ Signup to Visit Analysis Complete!\n\n';
+  summary += 'Total Signups: ' + totalSignups + '\n';
+  summary += 'Signups with Visits: ' + signupsWithVisits + ' (' + conversionRate.toFixed(1) + '%)\n';
+  summary += 'Never Visited: ' + signedUpNotVisited + '\n\n';
+  summary += 'Time to First Visit:\n';
+  summary += '• 25th percentile: ' + percentiles.p25 + ' days\n';
+  summary += '• 50th percentile: ' + percentiles.p50 + ' days\n';
+  summary += '• 75th percentile: ' + percentiles.p75 + ' days\n';
+  summary += '• 90th percentile: ' + percentiles.p90 + ' days\n\n';
+  summary += 'Check "Signup to Visit Analysis" sheet for full details!';
+
+  ui.alert('Signup to Visit Analysis', summary, ui.ButtonSet.OK);
+}

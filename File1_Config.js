@@ -82,6 +82,7 @@ function onOpen() {
       .addItem('📅 Booking Analysis Only', 'runBookingAnalysisOnly')
       .addItem('🍔 F&B Analysis Only', 'runFoodBevAnalysisOnly')
       .addItem('🔥 Bonus Insights Only', 'runBonusInsightsOnly')
+      .addItem('📊 Signup to Visit Time', 'runSignupToVisitAnalysis')
       .addSeparator()
       .addSubMenu(ui.createMenu('🔍 Special Analysis')
           .addItem('📦 Analyze Misc Items', 'analyzeMiscItems')
