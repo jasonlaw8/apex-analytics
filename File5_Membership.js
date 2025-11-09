@@ -382,20 +382,27 @@ function getMemberData(customerId, customerEmail) {
   var transSheet = ss.getSheetByName("Square Transactions Export");
   var transData = transSheet.getDataRange().getValues();
   var transHeaders = transData[0];
-  
+
   var transCustomerIdCol = transHeaders.indexOf("Customer ID");
+  var transEmailCol = transHeaders.indexOf("Customer Email");
   var transDateCol = transHeaders.indexOf("Date");
   var transCollectedCol = transHeaders.indexOf("Total Collected");
   var transIdCol = transHeaders.indexOf("Transaction ID");
-  
+
   var transactionDetails = {};
   var dayCount = {};
   var hourCount = {};
   var visitDateSet = {}; // Track unique visit dates
   var spendingByDate = {}; // Track spending per date
 
+  var normEmail = normalizeEmail(customerEmail);
+
   for (var i = 1; i < transData.length; i++) {
-    if (transData[i][transCustomerIdCol] === customerId) {
+    var transCustomerId = transData[i][transCustomerIdCol];
+    var transEmail = normalizeEmail(transData[i][transEmailCol]);
+
+    // Match by BOTH Customer ID AND email to catch all transactions
+    if (transCustomerId === customerId || (normEmail && transEmail === normEmail)) {
       var date = transData[i][transDateCol];
       var amount = parseFloat(transData[i][transCollectedCol]) || 0;
       var transId = transData[i][transIdCol];
@@ -703,8 +710,9 @@ function analyzeMembershipLeads() {
   var transSheet = ss.getSheetByName("Square Transactions Export");
   var transData = transSheet.getDataRange().getValues();
   var transHeaders = transData[0];
-  
+
   var transCustomerIdCol = transHeaders.indexOf("Customer ID");
+  var transEmailCol = transHeaders.indexOf("Customer Email");
   var transDateCol = transHeaders.indexOf("Date");
   var transCollectedCol = transHeaders.indexOf("Total Collected");
   var transIdCol = transHeaders.indexOf("Transaction ID");
@@ -756,9 +764,14 @@ function analyzeMembershipLeads() {
     var fbSpending90 = 0;
     var visitDates = [];
     var visitDateSet90 = {}; // Track unique visit dates in last 90 days
+    var normEmail = normalizeEmail(email);
 
     for (var j = 1; j < transData.length; j++) {
-      if (transData[j][transCustomerIdCol] === customerId) {
+      var transCustomerId = transData[j][transCustomerIdCol];
+      var transEmail = normalizeEmail(transData[j][transEmailCol]);
+
+      // Match by BOTH Customer ID AND email to catch all transactions
+      if (transCustomerId === customerId || (normEmail && transEmail === normEmail)) {
         var date = new Date(transData[j][transDateCol]);
 
         if (date >= ninetyDaysAgo) {
