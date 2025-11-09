@@ -391,42 +391,40 @@ function getMemberData(customerId, customerEmail) {
   var transactionDetails = {};
   var dayCount = {};
   var hourCount = {};
-  
+  var visitDateSet = {}; // Track unique visit dates
+  var spendingByDate = {}; // Track spending per date
+
   for (var i = 1; i < transData.length; i++) {
     if (transData[i][transCustomerIdCol] === customerId) {
       var date = transData[i][transDateCol];
       var amount = parseFloat(transData[i][transCollectedCol]) || 0;
       var transId = transData[i][transIdCol];
-      
-      result.visits.total++;
-      result.visits.dates.push(date);
+      var dateStr = Utilities.formatDate(new Date(date), Session.getScriptTimeZone(), "yyyy-MM-dd");
+
+      // Track unique visit dates
+      if (!visitDateSet[dateStr]) {
+        visitDateSet[dateStr] = new Date(date);
+        result.visits.dates.push(new Date(date));
+      }
+
+      // Accumulate spending
       result.spending.lifetime += amount;
-      
+      spendingByDate[dateStr] = (spendingByDate[dateStr] || 0) + amount;
+
       if (date >= thirtyDaysAgo) {
-        result.visits.last30Days++;
         result.spending.last30Days += amount;
       }
       if (date >= ninetyDaysAgo) {
-        result.visits.last90Days++;
         result.spending.last90Days += amount;
       }
       if (date >= oneYearAgo) {
-        result.visits.lastYear++;
         result.spending.lastYear += amount;
       }
-      
+
       if (result.visits.mostRecent === "N/A" || date > new Date(result.visits.mostRecent)) {
         result.visits.mostRecent = Utilities.formatDate(new Date(date), Session.getScriptTimeZone(), "MM/dd/yyyy");
       }
-      
-      // Track day of week
-      var dayOfWeek = new Date(date).getDay();
-      dayCount[dayOfWeek] = (dayCount[dayOfWeek] || 0) + 1;
-      
-      // Track hour of day
-      var hour = new Date(date).getHours();
-      hourCount[hour] = (hourCount[hour] || 0) + 1;
-      
+
       transactionDetails[transId] = {
         date: date,
         amount: amount,
@@ -434,6 +432,32 @@ function getMemberData(customerId, customerEmail) {
         categories: new Set()
       };
     }
+  }
+
+  // Count visits from unique dates
+  result.visits.total = Object.keys(visitDateSet).length;
+
+  // Count visits by time period based on unique dates
+  for (var dateStr in visitDateSet) {
+    var visitDate = visitDateSet[dateStr];
+
+    if (visitDate >= thirtyDaysAgo) {
+      result.visits.last30Days++;
+    }
+    if (visitDate >= ninetyDaysAgo) {
+      result.visits.last90Days++;
+    }
+    if (visitDate >= oneYearAgo) {
+      result.visits.lastYear++;
+    }
+
+    // Track day of week (based on unique visits, not transactions)
+    var dayOfWeek = visitDate.getDay();
+    dayCount[dayOfWeek] = (dayCount[dayOfWeek] || 0) + 1;
+
+    // Track hour of day (using first transaction of the day)
+    var hour = visitDate.getHours();
+    hourCount[hour] = (hourCount[hour] || 0) + 1;
   }
   
   // === GET ITEM DETAILS ===
@@ -731,17 +755,24 @@ function analyzeMembershipLeads() {
     var spending90 = 0;
     var fbSpending90 = 0;
     var visitDates = [];
-    
+    var visitDateSet90 = {}; // Track unique visit dates in last 90 days
+
     for (var j = 1; j < transData.length; j++) {
       if (transData[j][transCustomerIdCol] === customerId) {
         var date = new Date(transData[j][transDateCol]);
-        
+
         if (date >= ninetyDaysAgo) {
-          visits90++;
+          var dateStr = Utilities.formatDate(date, Session.getScriptTimeZone(), "yyyy-MM-dd");
+
+          // Track unique visit dates
+          if (!visitDateSet90[dateStr]) {
+            visitDateSet90[dateStr] = date;
+            visitDates.push(date);
+          }
+
           var amount = parseFloat(transData[j][transCollectedCol]) || 0;
           spending90 += amount;
-          visitDates.push(date);
-          
+
           var transId = transData[j][transIdCol];
           if (fbByTransaction[transId]) {
             fbSpending90 += fbByTransaction[transId];
@@ -749,6 +780,9 @@ function analyzeMembershipLeads() {
         }
       }
     }
+
+    // Count unique visits
+    visits90 = Object.keys(visitDateSet90).length;
     
     // Skip if no recent activity
     if (visits90 === 0) {
