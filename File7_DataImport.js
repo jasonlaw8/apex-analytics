@@ -101,46 +101,63 @@ function importFromDriveFolder() {
         continue;
       }
       
-      // Identify file type by name and track latest
-      // Check for transactions: "transactions-" or "transactions_"
-      if (fileName.indexOf('transaction') >= 0) {
-        if (lastUpdated > latestDates.transactions) {
-          latestFiles.transactions = file;
-          latestDates.transactions = lastUpdated;
-        }
-      } 
-      // Check for items: "items-" or "items_"
-      else if (fileName.indexOf('item') >= 0) {
-        if (lastUpdated > latestDates.items) {
-          latestFiles.items = file;
-          latestDates.items = lastUpdated;
-        }
-      } 
-      // Check for customers: "customer" or "customer_round_list"
-      else if (fileName.indexOf('customer') >= 0) {
-        if (lastUpdated > latestDates.customers) {
-          latestFiles.customers = file;
-          latestDates.customers = lastUpdated;
-        }
-      } 
-      // Check for timecards/shifts: "timecard", "staff", "payroll", "shifts", or "shift-export"
-      else if (fileName.indexOf('timecard') >= 0 || 
-               fileName.indexOf('staff') >= 0 || 
-               fileName.indexOf('payroll') >= 0 ||
-               fileName.indexOf('shift') >= 0) {
-        if (lastUpdated > latestDates.timecards) {
-          latestFiles.timecards = file;
-          latestDates.timecards = lastUpdated;
-        }
-      } 
-      // Check for bookings: "booking", "apex", or "export-" (generic export from Apex)
-      else if (fileName.indexOf('booking') >= 0 || 
-               fileName.indexOf('apex') >= 0 ||
-               (fileName.indexOf('export-') >= 0 && fileName.indexOf('item') < 0 && fileName.indexOf('transaction') < 0)) {
-        if (lastUpdated > latestDates.bookings) {
-          latestFiles.bookings = file;
-          latestDates.bookings = lastUpdated;
-        }
+      // Identify file type by name with specific pattern matching
+      // Based on YOUR actual file naming convention:
+      // - Apex bookings: "customer_round_list"
+      // - Square items: "items-"
+      // - Square transactions: "transactions-"
+      // - Staff shifts: "shifts-"
+      // - Square customers: just "export" (no other identifiers)
+
+      var fileType = null;
+
+      // Check for TRANSACTIONS (contains "transactions-")
+      if (fileName.indexOf('transactions-') >= 0) {
+        fileType = 'transactions';
+      }
+      // Check for ITEMS (contains "items-")
+      else if (fileName.indexOf('items-') >= 0) {
+        fileType = 'items';
+      }
+      // Check for BOOKINGS - Apex format (contains "customer_round_list")
+      else if (fileName.indexOf('customer_round_list') >= 0) {
+        fileType = 'bookings';
+      }
+      // Check for TIMECARDS/SHIFTS (contains "shifts-")
+      else if (fileName.indexOf('shifts-') >= 0) {
+        fileType = 'timecards';
+      }
+      // Check for CUSTOMERS - generic "export" file (fallback)
+      // This must be last - if it just says "export" and doesn't match above patterns
+      else if (fileName.indexOf('export') >= 0) {
+        fileType = 'customers';
+      }
+
+      // Update the latest file for this type
+      if (fileType === 'transactions' && lastUpdated > latestDates.transactions) {
+        latestFiles.transactions = file;
+        latestDates.transactions = lastUpdated;
+        Logger.log('  → Detected as TRANSACTION file: ' + fileName);
+      } else if (fileType === 'items' && lastUpdated > latestDates.items) {
+        latestFiles.items = file;
+        latestDates.items = lastUpdated;
+        Logger.log('  → Detected as ITEMS file: ' + fileName);
+      } else if (fileType === 'customers' && lastUpdated > latestDates.customers) {
+        latestFiles.customers = file;
+        latestDates.customers = lastUpdated;
+        Logger.log('  → Detected as CUSTOMERS file: ' + fileName);
+      } else if (fileType === 'timecards' && lastUpdated > latestDates.timecards) {
+        latestFiles.timecards = file;
+        latestDates.timecards = lastUpdated;
+        Logger.log('  → Detected as TIMECARDS file: ' + fileName);
+      } else if (fileType === 'bookings' && lastUpdated > latestDates.bookings) {
+        latestFiles.bookings = file;
+        latestDates.bookings = lastUpdated;
+        Logger.log('  → Detected as BOOKINGS file: ' + fileName);
+      } else if (fileType) {
+        Logger.log('  → Skipped (older version): ' + fileName + ' [' + fileType + ']');
+      } else {
+        Logger.log('  → Skipped (no match): ' + fileName);
       }
     }
     
@@ -704,50 +721,64 @@ function readFileData(file) {
 }
 
 /**
- * Parse CSV data handling quoted fields properly
+ * Parse CSV data handling quoted fields properly, including multi-line fields
  */
 function parseCSV(csvString) {
   var rows = [];
-  var lines = csvString.split('\n');
+  var currentRow = [];
+  var currentCell = '';
+  var inQuotes = false;
 
-  for (var i = 0; i < lines.length; i++) {
-    var line = lines[i];
+  // Process character by character
+  for (var i = 0; i < csvString.length; i++) {
+    var char = csvString.charAt(i);
+    var nextChar = i < csvString.length - 1 ? csvString.charAt(i + 1) : '';
 
-    // Skip empty lines
-    if (!line.trim()) {
-      continue;
-    }
-
-    var row = [];
-    var inQuotes = false;
-    var currentCell = '';
-
-    for (var j = 0; j < line.length; j++) {
-      var char = line.charAt(j);
-      var nextChar = j < line.length - 1 ? line.charAt(j + 1) : '';
-
-      if (char === '"') {
-        // Handle escaped quotes ("")
-        if (inQuotes && nextChar === '"') {
-          currentCell += '"';
-          j++; // Skip next quote
-        } else {
-          // Toggle quote state
-          inQuotes = !inQuotes;
-        }
-      } else if (char === ',' && !inQuotes) {
-        // End of cell
-        row.push(currentCell);
-        currentCell = '';
+    if (char === '"') {
+      // Handle escaped quotes ("")
+      if (inQuotes && nextChar === '"') {
+        currentCell += '"';
+        i++; // Skip next quote
       } else {
-        currentCell += char;
+        // Toggle quote state
+        inQuotes = !inQuotes;
       }
-    }
+    } else if (char === ',' && !inQuotes) {
+      // End of cell (comma outside quotes)
+      currentRow.push(currentCell);
+      currentCell = '';
+    } else if ((char === '\n' || char === '\r') && !inQuotes) {
+      // End of row (newline outside quotes)
+      // Handle \r\n (Windows) or \n (Unix) or \r (Mac)
+      if (char === '\r' && nextChar === '\n') {
+        i++; // Skip the \n in \r\n
+      }
 
-    // Add the last cell
-    row.push(currentCell);
-    rows.push(row);
+      // Add the last cell in the row
+      currentRow.push(currentCell);
+      currentCell = '';
+
+      // Only add non-empty rows
+      if (currentRow.length > 0 && currentRow.some(function(cell) { return cell.trim() !== ''; })) {
+        rows.push(currentRow);
+      }
+
+      currentRow = [];
+    } else {
+      // Regular character (including newlines inside quotes)
+      currentCell += char;
+    }
   }
+
+  // Add the last cell and row if there's remaining data
+  if (currentCell !== '' || currentRow.length > 0) {
+    currentRow.push(currentCell);
+    if (currentRow.length > 0 && currentRow.some(function(cell) { return cell.trim() !== ''; })) {
+      rows.push(currentRow);
+    }
+  }
+
+  Logger.log('CSV parser found ' + rows.length + ' rows');
 
   return rows;
 }
