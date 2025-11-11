@@ -101,46 +101,69 @@ function importFromDriveFolder() {
         continue;
       }
       
-      // Identify file type by name and track latest
-      // Check for transactions: "transactions-" or "transactions_"
+      // Identify file type by name with specific pattern matching
+      // Priority order: Most specific patterns first to avoid false positives
+
+      var fileType = null;
+
+      // Check for TRANSACTIONS (must contain "transaction")
       if (fileName.indexOf('transaction') >= 0) {
-        if (lastUpdated > latestDates.transactions) {
-          latestFiles.transactions = file;
-          latestDates.transactions = lastUpdated;
-        }
-      } 
-      // Check for items: "items-" or "items_"
-      else if (fileName.indexOf('item') >= 0) {
-        if (lastUpdated > latestDates.items) {
-          latestFiles.items = file;
-          latestDates.items = lastUpdated;
-        }
-      } 
-      // Check for customers: "customer" or "customer_round_list"
+        fileType = 'transactions';
+      }
+      // Check for ITEMS (must contain "item" but NOT "customer")
+      // Example: "items-export.csv", "square-items.csv"
+      else if (fileName.indexOf('item') >= 0 && fileName.indexOf('customer') < 0) {
+        fileType = 'items';
+      }
+      // Check for CUSTOMERS (must contain "customer")
+      // Example: "customers-export.csv", "square-customers.csv", "customer-list.csv"
       else if (fileName.indexOf('customer') >= 0) {
-        if (lastUpdated > latestDates.customers) {
-          latestFiles.customers = file;
-          latestDates.customers = lastUpdated;
-        }
-      } 
-      // Check for timecards/shifts: "timecard", "staff", "payroll", "shifts", or "shift-export"
-      else if (fileName.indexOf('timecard') >= 0 || 
-               fileName.indexOf('staff') >= 0 || 
+        fileType = 'customers';
+      }
+      // Check for TIMECARDS/STAFF (timecard, staff, payroll, shift)
+      // Example: "staff-timecards.csv", "payroll-export.csv", "shift-report.csv"
+      else if (fileName.indexOf('timecard') >= 0 ||
+               fileName.indexOf('staff') >= 0 ||
                fileName.indexOf('payroll') >= 0 ||
                fileName.indexOf('shift') >= 0) {
-        if (lastUpdated > latestDates.timecards) {
-          latestFiles.timecards = file;
-          latestDates.timecards = lastUpdated;
-        }
-      } 
-      // Check for bookings: "booking", "apex", or "export-" (generic export from Apex)
-      else if (fileName.indexOf('booking') >= 0 || 
-               fileName.indexOf('apex') >= 0 ||
-               (fileName.indexOf('export-') >= 0 && fileName.indexOf('item') < 0 && fileName.indexOf('transaction') < 0)) {
-        if (lastUpdated > latestDates.bookings) {
-          latestFiles.bookings = file;
-          latestDates.bookings = lastUpdated;
-        }
+        fileType = 'timecards';
+      }
+      // Check for BOOKINGS - be very specific to avoid false matches
+      // Must contain "booking" OR "reservation" OR ("apex" AND "export" but NOT customer/item/transaction)
+      // Example: "bookings-export.csv", "apex-booking-export.csv", "reservations.csv"
+      else if (fileName.indexOf('booking') >= 0 ||
+               fileName.indexOf('reservation') >= 0 ||
+               (fileName.indexOf('apex') >= 0 && fileName.indexOf('export') >= 0 &&
+                fileName.indexOf('customer') < 0 && fileName.indexOf('item') < 0 &&
+                fileName.indexOf('transaction') < 0)) {
+        fileType = 'bookings';
+      }
+
+      // Update the latest file for this type
+      if (fileType === 'transactions' && lastUpdated > latestDates.transactions) {
+        latestFiles.transactions = file;
+        latestDates.transactions = lastUpdated;
+        Logger.log('  → Detected as TRANSACTION file: ' + fileName);
+      } else if (fileType === 'items' && lastUpdated > latestDates.items) {
+        latestFiles.items = file;
+        latestDates.items = lastUpdated;
+        Logger.log('  → Detected as ITEMS file: ' + fileName);
+      } else if (fileType === 'customers' && lastUpdated > latestDates.customers) {
+        latestFiles.customers = file;
+        latestDates.customers = lastUpdated;
+        Logger.log('  → Detected as CUSTOMERS file: ' + fileName);
+      } else if (fileType === 'timecards' && lastUpdated > latestDates.timecards) {
+        latestFiles.timecards = file;
+        latestDates.timecards = lastUpdated;
+        Logger.log('  → Detected as TIMECARDS file: ' + fileName);
+      } else if (fileType === 'bookings' && lastUpdated > latestDates.bookings) {
+        latestFiles.bookings = file;
+        latestDates.bookings = lastUpdated;
+        Logger.log('  → Detected as BOOKINGS file: ' + fileName);
+      } else if (fileType) {
+        Logger.log('  → Skipped (older version): ' + fileName + ' [' + fileType + ']');
+      } else {
+        Logger.log('  → Skipped (no match): ' + fileName);
       }
     }
     
