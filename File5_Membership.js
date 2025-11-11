@@ -345,32 +345,40 @@ function getMemberData(customerId, customerEmail) {
     transactions: []
   };
   
-  // === GET PLAY TIME FROM BOOKINGS ===
+  // === GET PLAY TIME FROM BOOKINGS AND TRACK BOOKING VISITS ===
   var bookingSheet = ss.getSheetByName("Apex Bookings Export");
+  var bookingsByDate = {};
+  var visitDateSet = {}; // Track ALL unique visit dates (bookings + transactions)
+
   if (bookingSheet) {
     var bookingData = bookingSheet.getDataRange().getValues();
     var bookingHeaders = bookingData[0];
-    
+
     var bookingEmailCol = bookingHeaders.indexOf("Email");
     var bookingDateCol = bookingHeaders.indexOf("Date");
     var bookingDurationCol = bookingHeaders.indexOf("Duration Mins");
-    
+
     var normEmail = normalizeEmail(customerEmail);
-    var bookingsByDate = {};
-    
+
     for (var i = 1; i < bookingData.length; i++) {
       var email = normalizeEmail(bookingData[i][bookingEmailCol]);
-      
+
       if (email === normEmail) {
         var date = bookingData[i][bookingDateCol];
         var duration = parseFloat(bookingData[i][bookingDurationCol]) || 0;
         var hours = duration / 60;
-        
+
         var dateStr = Utilities.formatDate(new Date(date), Session.getScriptTimeZone(), "yyyy-MM-dd");
         bookingsByDate[dateStr] = (bookingsByDate[dateStr] || 0) + hours;
-        
+
+        // Track this as a visit date
+        if (!visitDateSet[dateStr]) {
+          visitDateSet[dateStr] = new Date(date);
+          result.visits.dates.push(new Date(date));
+        }
+
         result.playTime.allTime += hours;
-        
+
         if (date >= thirtyDaysAgo) result.playTime.last30Days += hours;
         if (date >= ninetyDaysAgo) result.playTime.last90Days += hours;
         if (date >= oneYearAgo) result.playTime.lastYear += hours;
@@ -392,7 +400,6 @@ function getMemberData(customerId, customerEmail) {
   var transactionDetails = {};
   var dayCount = {};
   var hourCount = {};
-  var visitDateSet = {}; // Track unique visit dates
   var spendingByDate = {}; // Track spending per date
 
   var normEmail = normalizeEmail(customerEmail);
@@ -408,7 +415,7 @@ function getMemberData(customerId, customerEmail) {
       var transId = transData[i][transIdCol];
       var dateStr = Utilities.formatDate(new Date(date), Session.getScriptTimeZone(), "yyyy-MM-dd");
 
-      // Track unique visit dates
+      // Track unique visit dates (add to the set created from bookings)
       if (!visitDateSet[dateStr]) {
         visitDateSet[dateStr] = new Date(date);
         result.visits.dates.push(new Date(date));
@@ -742,30 +749,68 @@ function analyzeMembershipLeads() {
     }
   }
   
+  // === GET BOOKINGS DATA FOR VISIT TRACKING ===
+  var bookingSheet = ss.getSheetByName("Apex Bookings Export");
+  var bookingsByCustomer = {}; // Map email -> array of booking dates
+
+  if (bookingSheet) {
+    var bookingData = bookingSheet.getDataRange().getValues();
+    var bookingHeaders = bookingData[0];
+
+    var bookingEmailCol = bookingHeaders.indexOf("Email");
+    var bookingDateCol = bookingHeaders.indexOf("Date");
+
+    for (var i = 1; i < bookingData.length; i++) {
+      var bookingEmail = normalizeEmail(bookingData[i][bookingEmailCol]);
+      var bookingDate = new Date(bookingData[i][bookingDateCol]);
+
+      if (bookingEmail && bookingDate >= ninetyDaysAgo) {
+        if (!bookingsByCustomer[bookingEmail]) {
+          bookingsByCustomer[bookingEmail] = [];
+        }
+        bookingsByCustomer[bookingEmail].push(bookingDate);
+      }
+    }
+  }
+
   // === ANALYZE EACH NON-MEMBER ===
   var leads = [];
-  
+
   for (var i = 1; i < customerData.length; i++) {
     var customerId = customerData[i][customerIdCol];
-    
+
     // Skip if already a member
     if (memberSet.has(customerId)) {
       continue;
     }
-    
+
     var firstName = customerData[i][firstNameCol] || "";
     var lastName = customerData[i][lastNameCol] || "";
     var email = customerData[i][emailCol] || "";
     var fullName = (firstName + " " + lastName).trim() || email;
-    
+
     // Calculate metrics for last 90 days
     var visits90 = 0;
     var spending90 = 0;
     var fbSpending90 = 0;
     var visitDates = [];
-    var visitDateSet90 = {}; // Track unique visit dates in last 90 days
+    var visitDateSet90 = {}; // Track unique visit dates in last 90 days (bookings + transactions)
     var normEmail = normalizeEmail(email);
 
+    // First, add booking visits for this customer
+    if (normEmail && bookingsByCustomer[normEmail]) {
+      for (var k = 0; k < bookingsByCustomer[normEmail].length; k++) {
+        var bookingDate = bookingsByCustomer[normEmail][k];
+        var dateStr = Utilities.formatDate(bookingDate, Session.getScriptTimeZone(), "yyyy-MM-dd");
+
+        if (!visitDateSet90[dateStr]) {
+          visitDateSet90[dateStr] = bookingDate;
+          visitDates.push(bookingDate);
+        }
+      }
+    }
+
+    // Then add transaction visits
     for (var j = 1; j < transData.length; j++) {
       var transCustomerId = transData[j][transCustomerIdCol];
       var transEmail = normalizeEmail(transData[j][transEmailCol]);
@@ -794,7 +839,7 @@ function analyzeMembershipLeads() {
       }
     }
 
-    // Count unique visits
+    // Count unique visits (from both bookings and transactions)
     visits90 = Object.keys(visitDateSet90).length;
     
     // Skip if no recent activity
