@@ -585,17 +585,21 @@ function getRevenueMetrics() {
   var itemHeaders = itemData[0];
   var itemTransIdCol = itemHeaders.indexOf("Transaction ID");
   var itemCategoryCol = itemHeaders.indexOf("Category");
+  var itemNameCol = itemHeaders.indexOf("Item");
   var itemSalesCol = itemHeaders.indexOf("Gross Sales");
-  
+
   var eventTransactions = {};
   var eventRevenue = 0;
-  
+
   for (var i = 1; i < itemData.length; i++) {
     var transId = itemData[i][itemTransIdCol];
     var category = itemData[i][itemCategoryCol];
+    var itemName = itemData[i][itemNameCol];
     var sales = parseFloat(itemData[i][itemSalesCol]) || 0;
-    
-    if (category && String(category).toLowerCase().trim() === "event") {
+
+    // Use getMajorCategory for consistent event detection
+    var majorCat = getMajorCategory(category, itemName);
+    if (majorCat === "Event") {
       eventTransactions[transId] = true;
       eventRevenue += sales;
     }

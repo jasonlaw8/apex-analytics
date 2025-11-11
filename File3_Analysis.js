@@ -38,12 +38,17 @@ function getTopSpenders() {
   var itemHeaders = itemData[0];
   var itemTransIdCol = itemHeaders.indexOf("Transaction ID");
   var itemCategoryCol = itemHeaders.indexOf("Category");
-  
+  var itemNameCol = itemHeaders.indexOf("Item");
+
   var eventTransactions = {};
   for (var i = 1; i < itemData.length; i++) {
     var transId = itemData[i][itemTransIdCol];
     var category = itemData[i][itemCategoryCol];
-    if (category && String(category).toLowerCase().trim() === "event") {
+    var itemName = itemData[i][itemNameCol];
+
+    // Use getMajorCategory for consistent event detection
+    var majorCat = getMajorCategory(category, itemName);
+    if (majorCat === "Event") {
       eventTransactions[transId] = true;
     }
   }
