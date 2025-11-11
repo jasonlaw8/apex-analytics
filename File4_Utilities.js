@@ -261,8 +261,15 @@ function getDefaultMajorCategory(cat) {
     return "Membership";
   }
   
-  // Event category
-  if (cat === "event") {
+  // Event categories
+  if (cat === "event" ||
+      cat === "events" ||
+      cat.includes("event") ||
+      cat.includes("private") ||
+      cat.includes("corporate") ||
+      cat.includes("party") ||
+      cat.includes("tournament") ||
+      cat.includes("league")) {
     return "Event";
   }
   
