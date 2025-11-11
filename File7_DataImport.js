@@ -658,29 +658,96 @@ function importApexBookings(file) {
 function readFileData(file) {
   var mimeType = file.getMimeType();
   var data = [];
-  
+
   if (mimeType === MimeType.MICROSOFT_EXCEL || mimeType === MimeType.GOOGLE_SHEETS) {
     // Convert to Google Sheets temporarily to read
+    Logger.log('Converting Excel/Sheets file to read...');
     var tempSheet = Drive.Files.copy({}, file.getId(), {convert: true});
     var tempSS = SpreadsheetApp.openById(tempSheet.id);
     var sheet = tempSS.getSheets()[0];
     data = sheet.getDataRange().getValues();
-    
+
     // Delete temp file
     Drive.Files.remove(tempSheet.id);
-    
+    Logger.log('Read ' + data.length + ' rows from Excel/Sheets file');
+
   } else if (file.getName().endsWith('.csv')) {
-    // Read CSV
+    Logger.log('Parsing CSV file...');
+    // Read CSV with proper parsing for quoted fields
     var csvData = file.getBlob().getDataAsString();
-    var rows = csvData.split('\n');
-    
-    for (var i = 0; i < rows.length; i++) {
-      if (rows[i].trim()) {
-        // Simple CSV parsing (handles basic cases)
-        data.push(rows[i].split(','));
+    data = parseCSV(csvData);
+    Logger.log('Parsed ' + data.length + ' rows from CSV');
+  }
+
+  // Ensure all rows have the same number of columns
+  if (data.length > 0) {
+    var maxCols = 0;
+    for (var i = 0; i < data.length; i++) {
+      if (data[i].length > maxCols) {
+        maxCols = data[i].length;
       }
     }
+
+    Logger.log('Max columns found: ' + maxCols);
+
+    // Pad rows with fewer columns
+    for (var i = 0; i < data.length; i++) {
+      while (data[i].length < maxCols) {
+        data[i].push('');
+      }
+    }
+
+    Logger.log('Normalized all rows to ' + maxCols + ' columns');
   }
-  
+
   return data;
+}
+
+/**
+ * Parse CSV data handling quoted fields properly
+ */
+function parseCSV(csvString) {
+  var rows = [];
+  var lines = csvString.split('\n');
+
+  for (var i = 0; i < lines.length; i++) {
+    var line = lines[i];
+
+    // Skip empty lines
+    if (!line.trim()) {
+      continue;
+    }
+
+    var row = [];
+    var inQuotes = false;
+    var currentCell = '';
+
+    for (var j = 0; j < line.length; j++) {
+      var char = line.charAt(j);
+      var nextChar = j < line.length - 1 ? line.charAt(j + 1) : '';
+
+      if (char === '"') {
+        // Handle escaped quotes ("")
+        if (inQuotes && nextChar === '"') {
+          currentCell += '"';
+          j++; // Skip next quote
+        } else {
+          // Toggle quote state
+          inQuotes = !inQuotes;
+        }
+      } else if (char === ',' && !inQuotes) {
+        // End of cell
+        row.push(currentCell);
+        currentCell = '';
+      } else {
+        currentCell += char;
+      }
+    }
+
+    // Add the last cell
+    row.push(currentCell);
+    rows.push(row);
+  }
+
+  return rows;
 }
