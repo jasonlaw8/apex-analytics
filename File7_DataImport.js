@@ -102,41 +102,35 @@ function importFromDriveFolder() {
       }
       
       // Identify file type by name with specific pattern matching
-      // Priority order: Most specific patterns first to avoid false positives
+      // Based on YOUR actual file naming convention:
+      // - Apex bookings: "customer_round_list"
+      // - Square items: "items-"
+      // - Square transactions: "transactions-"
+      // - Staff shifts: "shifts-"
+      // - Square customers: just "export" (no other identifiers)
 
       var fileType = null;
 
-      // Check for TRANSACTIONS (must contain "transaction")
-      if (fileName.indexOf('transaction') >= 0) {
+      // Check for TRANSACTIONS (contains "transactions-")
+      if (fileName.indexOf('transactions-') >= 0) {
         fileType = 'transactions';
       }
-      // Check for ITEMS (must contain "item" but NOT "customer")
-      // Example: "items-export.csv", "square-items.csv"
-      else if (fileName.indexOf('item') >= 0 && fileName.indexOf('customer') < 0) {
+      // Check for ITEMS (contains "items-")
+      else if (fileName.indexOf('items-') >= 0) {
         fileType = 'items';
       }
-      // Check for CUSTOMERS (must contain "customer")
-      // Example: "customers-export.csv", "square-customers.csv", "customer-list.csv"
-      else if (fileName.indexOf('customer') >= 0) {
-        fileType = 'customers';
+      // Check for BOOKINGS - Apex format (contains "customer_round_list")
+      else if (fileName.indexOf('customer_round_list') >= 0) {
+        fileType = 'bookings';
       }
-      // Check for TIMECARDS/STAFF (timecard, staff, payroll, shift)
-      // Example: "staff-timecards.csv", "payroll-export.csv", "shift-report.csv"
-      else if (fileName.indexOf('timecard') >= 0 ||
-               fileName.indexOf('staff') >= 0 ||
-               fileName.indexOf('payroll') >= 0 ||
-               fileName.indexOf('shift') >= 0) {
+      // Check for TIMECARDS/SHIFTS (contains "shifts-")
+      else if (fileName.indexOf('shifts-') >= 0) {
         fileType = 'timecards';
       }
-      // Check for BOOKINGS - be very specific to avoid false matches
-      // Must contain "booking" OR "reservation" OR ("apex" AND "export" but NOT customer/item/transaction)
-      // Example: "bookings-export.csv", "apex-booking-export.csv", "reservations.csv"
-      else if (fileName.indexOf('booking') >= 0 ||
-               fileName.indexOf('reservation') >= 0 ||
-               (fileName.indexOf('apex') >= 0 && fileName.indexOf('export') >= 0 &&
-                fileName.indexOf('customer') < 0 && fileName.indexOf('item') < 0 &&
-                fileName.indexOf('transaction') < 0)) {
-        fileType = 'bookings';
+      // Check for CUSTOMERS - generic "export" file (fallback)
+      // This must be last - if it just says "export" and doesn't match above patterns
+      else if (fileName.indexOf('export') >= 0) {
+        fileType = 'customers';
       }
 
       // Update the latest file for this type
