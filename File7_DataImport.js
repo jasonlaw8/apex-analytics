@@ -152,35 +152,60 @@ function importFromDriveFolder() {
       customers: false
     };
     
-    // Import the latest file of each type
+    // Import the latest file of each type with detailed error handling
     if (latestFiles.transactions) {
-      Logger.log("Importing latest transactions: " + latestFiles.transactions.getName());
-      importSquareTransactions(latestFiles.transactions);
-      imported.transactions = true;
+      try {
+        Logger.log("Importing latest transactions: " + latestFiles.transactions.getName());
+        importSquareTransactions(latestFiles.transactions);
+        imported.transactions = true;
+      } catch (error) {
+        Logger.log("ERROR importing transactions: " + error.toString());
+        throw new Error("Failed to import Square Transactions from '" + latestFiles.transactions.getName() + "': " + error.toString());
+      }
     }
-    
+
     if (latestFiles.items) {
-      Logger.log("Importing latest items: " + latestFiles.items.getName());
-      importSquareItems(latestFiles.items);
-      imported.items = true;
+      try {
+        Logger.log("Importing latest items: " + latestFiles.items.getName());
+        importSquareItems(latestFiles.items);
+        imported.items = true;
+      } catch (error) {
+        Logger.log("ERROR importing items: " + error.toString());
+        throw new Error("Failed to import Square Items from '" + latestFiles.items.getName() + "': " + error.toString());
+      }
     }
-    
+
     if (latestFiles.customers) {
-      Logger.log("Importing latest customers: " + latestFiles.customers.getName());
-      importSquareCustomers(latestFiles.customers);
-      imported.customers = true;
+      try {
+        Logger.log("Importing latest customers: " + latestFiles.customers.getName());
+        importSquareCustomers(latestFiles.customers);
+        imported.customers = true;
+      } catch (error) {
+        Logger.log("ERROR importing customers: " + error.toString());
+        throw new Error("Failed to import Square Customers from '" + latestFiles.customers.getName() + "': " + error.toString());
+      }
     }
-    
+
     if (latestFiles.timecards) {
-      Logger.log("Importing latest timecards: " + latestFiles.timecards.getName());
-      importStaffTimecards(latestFiles.timecards);
-      imported.timecards = true;
+      try {
+        Logger.log("Importing latest timecards: " + latestFiles.timecards.getName());
+        importStaffTimecards(latestFiles.timecards);
+        imported.timecards = true;
+      } catch (error) {
+        Logger.log("ERROR importing timecards: " + error.toString());
+        throw new Error("Failed to import Staff Timecards from '" + latestFiles.timecards.getName() + "': " + error.toString());
+      }
     }
-    
+
     if (latestFiles.bookings) {
-      Logger.log("Importing latest bookings: " + latestFiles.bookings.getName());
-      importApexBookings(latestFiles.bookings);
-      imported.bookings = true;
+      try {
+        Logger.log("Importing latest bookings: " + latestFiles.bookings.getName());
+        importApexBookings(latestFiles.bookings);
+        imported.bookings = true;
+      } catch (error) {
+        Logger.log("ERROR importing bookings: " + error.toString());
+        throw new Error("Failed to import Apex Bookings from '" + latestFiles.bookings.getName() + "': " + error.toString());
+      }
     }
     
     // Show results with file names
@@ -417,21 +442,21 @@ function showPasteImportDialog() {
  */
 function importPastedData(dataType, pastedData) {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
-  
+
   // Parse TSV data (tab-separated from copy/paste)
   var rows = pastedData.split('\n');
   var data = [];
-  
+
   for (var i = 0; i < rows.length; i++) {
     if (rows[i].trim()) {
       data.push(rows[i].split('\t'));
     }
   }
-  
+
   if (data.length === 0) {
     throw new Error('No data found');
   }
-  
+
   // Get target sheet
   var sheetName = '';
   switch(dataType) {
@@ -451,22 +476,21 @@ function importPastedData(dataType, pastedData) {
       sheetName = 'Apex Bookings Export';
       break;
   }
-  
+
   var sheet = ss.getSheetByName(sheetName);
   if (!sheet) {
     throw new Error('Sheet not found: ' + sheetName);
   }
-  
-  // Clear existing data (keep headers)
-  var lastRow = sheet.getLastRow();
-  if (lastRow > 1) {
-    sheet.getRange(2, 1, lastRow - 1, sheet.getLastColumn()).clear();
+
+  // Clear ALL existing data (including headers)
+  if (sheet.getLastRow() > 0) {
+    sheet.clear();
   }
-  
-  // Paste new data
+
+  // Paste new data (including headers)
   sheet.getRange(1, 1, data.length, data[0].length).setValues(data);
-  
-  Logger.log('Imported ' + (data.length - 1) + ' rows into ' + sheetName);
+
+  Logger.log('Imported ' + (data.length - 1) + ' rows with ' + data[0].length + ' columns into ' + sheetName);
 }
 
 // ============================================
@@ -480,6 +504,7 @@ function importSquareCustomers(file) {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
   var sheet = ss.getSheetByName('Square Customer Export');
 
+  Logger.log('Reading file: ' + file.getName());
   var data = readFileData(file);
 
   if (data.length === 0) {
@@ -487,15 +512,20 @@ function importSquareCustomers(file) {
     return;
   }
 
+  Logger.log('File has ' + data.length + ' rows and ' + data[0].length + ' columns');
+  Logger.log('Sheet "Square Customer Export" currently has ' + sheet.getLastRow() + ' rows and ' + sheet.getLastColumn() + ' columns');
+
   // Clear all existing data (including headers)
   if (sheet.getLastRow() > 0) {
+    Logger.log('Clearing existing sheet data...');
     sheet.clear();
   }
 
   // Import ALL data including headers from the file
+  Logger.log('Writing data to range: 1,1 to ' + data.length + ',' + data[0].length);
   sheet.getRange(1, 1, data.length, data[0].length).setValues(data);
 
-  Logger.log('Imported Square Customers: ' + (data.length - 1) + ' rows with ' + data[0].length + ' columns');
+  Logger.log('✓ Successfully imported Square Customers: ' + (data.length - 1) + ' rows with ' + data[0].length + ' columns');
 }
 
 /**
@@ -505,6 +535,7 @@ function importSquareTransactions(file) {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
   var sheet = ss.getSheetByName('Square Transactions Export');
 
+  Logger.log('Reading file: ' + file.getName());
   var data = readFileData(file);
 
   if (data.length === 0) {
@@ -512,15 +543,20 @@ function importSquareTransactions(file) {
     return;
   }
 
+  Logger.log('File has ' + data.length + ' rows and ' + data[0].length + ' columns');
+  Logger.log('Sheet "Square Transactions Export" currently has ' + sheet.getLastRow() + ' rows and ' + sheet.getLastColumn() + ' columns');
+
   // Clear all existing data (including headers)
   if (sheet.getLastRow() > 0) {
+    Logger.log('Clearing existing sheet data...');
     sheet.clear();
   }
 
   // Import ALL data including headers from the file
+  Logger.log('Writing data to range: 1,1 to ' + data.length + ',' + data[0].length);
   sheet.getRange(1, 1, data.length, data[0].length).setValues(data);
 
-  Logger.log('Imported Square Transactions: ' + (data.length - 1) + ' rows with ' + data[0].length + ' columns');
+  Logger.log('✓ Successfully imported Square Transactions: ' + (data.length - 1) + ' rows with ' + data[0].length + ' columns');
 }
 
 /**
@@ -530,6 +566,7 @@ function importSquareItems(file) {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
   var sheet = ss.getSheetByName('Square Item Detail Export');
 
+  Logger.log('Reading file: ' + file.getName());
   var data = readFileData(file);
 
   if (data.length === 0) {
@@ -537,15 +574,20 @@ function importSquareItems(file) {
     return;
   }
 
+  Logger.log('File has ' + data.length + ' rows and ' + data[0].length + ' columns');
+  Logger.log('Sheet "Square Item Detail Export" currently has ' + sheet.getLastRow() + ' rows and ' + sheet.getLastColumn() + ' columns');
+
   // Clear all existing data (including headers)
   if (sheet.getLastRow() > 0) {
+    Logger.log('Clearing existing sheet data...');
     sheet.clear();
   }
 
   // Import ALL data including headers from the file
+  Logger.log('Writing data to range: 1,1 to ' + data.length + ',' + data[0].length);
   sheet.getRange(1, 1, data.length, data[0].length).setValues(data);
 
-  Logger.log('Imported Square Items: ' + (data.length - 1) + ' rows with ' + data[0].length + ' columns');
+  Logger.log('✓ Successfully imported Square Items: ' + (data.length - 1) + ' rows with ' + data[0].length + ' columns');
 }
 
 /**
@@ -555,6 +597,7 @@ function importStaffTimecards(file) {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
   var sheet = ss.getSheetByName('Staff Timecards');
 
+  Logger.log('Reading file: ' + file.getName());
   var data = readFileData(file);
 
   if (data.length === 0) {
@@ -562,15 +605,20 @@ function importStaffTimecards(file) {
     return;
   }
 
+  Logger.log('File has ' + data.length + ' rows and ' + data[0].length + ' columns');
+  Logger.log('Sheet "Staff Timecards" currently has ' + sheet.getLastRow() + ' rows and ' + sheet.getLastColumn() + ' columns');
+
   // Clear all existing data (including headers)
   if (sheet.getLastRow() > 0) {
+    Logger.log('Clearing existing sheet data...');
     sheet.clear();
   }
 
   // Import ALL data including headers from the file
+  Logger.log('Writing data to range: 1,1 to ' + data.length + ',' + data[0].length);
   sheet.getRange(1, 1, data.length, data[0].length).setValues(data);
 
-  Logger.log('Imported Staff Timecards: ' + (data.length - 1) + ' rows with ' + data[0].length + ' columns');
+  Logger.log('✓ Successfully imported Staff Timecards: ' + (data.length - 1) + ' rows with ' + data[0].length + ' columns');
 }
 
 /**
@@ -580,6 +628,7 @@ function importApexBookings(file) {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
   var sheet = ss.getSheetByName('Apex Bookings Export');
 
+  Logger.log('Reading file: ' + file.getName());
   var data = readFileData(file);
 
   if (data.length === 0) {
@@ -587,15 +636,20 @@ function importApexBookings(file) {
     return;
   }
 
+  Logger.log('File has ' + data.length + ' rows and ' + data[0].length + ' columns');
+  Logger.log('Sheet "Apex Bookings Export" currently has ' + sheet.getLastRow() + ' rows and ' + sheet.getLastColumn() + ' columns');
+
   // Clear all existing data (including headers)
   if (sheet.getLastRow() > 0) {
+    Logger.log('Clearing existing sheet data...');
     sheet.clear();
   }
 
   // Import ALL data including headers from the file
+  Logger.log('Writing data to range: 1,1 to ' + data.length + ',' + data[0].length);
   sheet.getRange(1, 1, data.length, data[0].length).setValues(data);
 
-  Logger.log('Imported Apex Bookings: ' + (data.length - 1) + ' rows with ' + data[0].length + ' columns');
+  Logger.log('✓ Successfully imported Apex Bookings: ' + (data.length - 1) + ' rows with ' + data[0].length + ' columns');
 }
 
 /**
