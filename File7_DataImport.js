@@ -704,50 +704,64 @@ function readFileData(file) {
 }
 
 /**
- * Parse CSV data handling quoted fields properly
+ * Parse CSV data handling quoted fields properly, including multi-line fields
  */
 function parseCSV(csvString) {
   var rows = [];
-  var lines = csvString.split('\n');
+  var currentRow = [];
+  var currentCell = '';
+  var inQuotes = false;
 
-  for (var i = 0; i < lines.length; i++) {
-    var line = lines[i];
+  // Process character by character
+  for (var i = 0; i < csvString.length; i++) {
+    var char = csvString.charAt(i);
+    var nextChar = i < csvString.length - 1 ? csvString.charAt(i + 1) : '';
 
-    // Skip empty lines
-    if (!line.trim()) {
-      continue;
-    }
-
-    var row = [];
-    var inQuotes = false;
-    var currentCell = '';
-
-    for (var j = 0; j < line.length; j++) {
-      var char = line.charAt(j);
-      var nextChar = j < line.length - 1 ? line.charAt(j + 1) : '';
-
-      if (char === '"') {
-        // Handle escaped quotes ("")
-        if (inQuotes && nextChar === '"') {
-          currentCell += '"';
-          j++; // Skip next quote
-        } else {
-          // Toggle quote state
-          inQuotes = !inQuotes;
-        }
-      } else if (char === ',' && !inQuotes) {
-        // End of cell
-        row.push(currentCell);
-        currentCell = '';
+    if (char === '"') {
+      // Handle escaped quotes ("")
+      if (inQuotes && nextChar === '"') {
+        currentCell += '"';
+        i++; // Skip next quote
       } else {
-        currentCell += char;
+        // Toggle quote state
+        inQuotes = !inQuotes;
       }
-    }
+    } else if (char === ',' && !inQuotes) {
+      // End of cell (comma outside quotes)
+      currentRow.push(currentCell);
+      currentCell = '';
+    } else if ((char === '\n' || char === '\r') && !inQuotes) {
+      // End of row (newline outside quotes)
+      // Handle \r\n (Windows) or \n (Unix) or \r (Mac)
+      if (char === '\r' && nextChar === '\n') {
+        i++; // Skip the \n in \r\n
+      }
 
-    // Add the last cell
-    row.push(currentCell);
-    rows.push(row);
+      // Add the last cell in the row
+      currentRow.push(currentCell);
+      currentCell = '';
+
+      // Only add non-empty rows
+      if (currentRow.length > 0 && currentRow.some(function(cell) { return cell.trim() !== ''; })) {
+        rows.push(currentRow);
+      }
+
+      currentRow = [];
+    } else {
+      // Regular character (including newlines inside quotes)
+      currentCell += char;
+    }
   }
+
+  // Add the last cell and row if there's remaining data
+  if (currentCell !== '' || currentRow.length > 0) {
+    currentRow.push(currentCell);
+    if (currentRow.length > 0 && currentRow.some(function(cell) { return cell.trim() !== ''; })) {
+      rows.push(currentRow);
+    }
+  }
+
+  Logger.log('CSV parser found ' + rows.length + ' rows');
 
   return rows;
 }
