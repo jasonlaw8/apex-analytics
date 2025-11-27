@@ -136,70 +136,225 @@ function calculateRepeatPurchaseRates(transData, customerIdCol, dateCol) {
 // ============================================
 
 /**
- * Maps detailed categories to major categories
- * Caches Category Override sheet to avoid repeated reads
- * Priority: Item Name > Category > Default Logic
+ * Gets Data Cleanup mappings (item name -> category)
+ * These are categories assigned through the cleanup wizard
  */
-function getMajorCategory(category, itemName) {
-  if (!category) return "Miscellaneous";
-  
-  var cat = String(category).toLowerCase().trim();
-  var item = itemName ? String(itemName).toLowerCase().trim() : null;
-  
-  // Check cache first - create cache key from both category and item
-  var cache = CacheService.getScriptCache();
-  var cacheKey = "majorCat_" + cat + "_" + (item || "");
-  var cached = cache.get(cacheKey);
-  
-  if (cached !== null) {
-    return cached;
-  }
-  
-  // Not in cache, check Category Override sheet
+function getDataCleanupMappings() {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
-  var overrideSheet = ss.getSheetByName("Category Override");
-  
-  var result = null;
-  
-  if (overrideSheet) {
-    var lastRow = overrideSheet.getLastRow();
-    if (lastRow > 5) {  // Skip header rows
-      var data = overrideSheet.getRange(6, 1, lastRow - 5, 3).getValues();
-      
-      for (var i = 0; i < data.length; i++) {
-        var overrideCat = data[i][0];
-        var overrideItem = data[i][1];
-        var majorCat = data[i][2];
-        
-        if (!majorCat) continue;
-        
-        // Priority 1: Item Name match (HIGHEST)
-        if (item && overrideItem && String(overrideItem).toLowerCase().trim() === item) {
-          result = majorCat;
-          break; // Found item match, stop looking
-        }
-        
-        // Priority 2: Category match
-        if (!result && overrideCat && String(overrideCat).toLowerCase().trim() === cat) {
-          result = majorCat;
-          // Don't break - keep looking for item match
+  var cleanupSheet = ss.getSheetByName("Data Cleanup");
+
+  if (!cleanupSheet) {
+    return {};
+  }
+
+  var lastRow = cleanupSheet.getLastRow();
+  if (lastRow <= 4) {  // Only headers
+    return {};
+  }
+
+  var data = cleanupSheet.getRange(5, 1, lastRow - 4, 2).getValues();
+  var mappings = {};
+
+  for (var i = 0; i < data.length; i++) {
+    var itemName = data[i][0];
+    var category = data[i][1];
+
+    if (itemName && category) {
+      mappings[String(itemName).toLowerCase().trim()] = category;
+    }
+  }
+
+  return mappings;
+}
+
+/**
+ * Gets Item Transaction Overrides for in-memory application
+ * Returns: { transactionId: { itemName: category } } or { transactionId: { "*": category } }
+ */
+function getItemTransactionOverridesMap() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var overrideSheet = ss.getSheetByName("Item Transaction Override");
+
+  if (!overrideSheet) {
+    return {};
+  }
+
+  var lastRow = overrideSheet.getLastRow();
+  if (lastRow <= 5) {
+    return {};
+  }
+
+  // Read from row 6 onwards (skip headers and instructions)
+  var data = overrideSheet.getRange(6, 1, lastRow - 5, 3).getValues();
+  var overrides = {};
+
+  for (var i = 0; i < data.length; i++) {
+    var transId = data[i][0];
+    var itemName = data[i][1];
+    var category = data[i][2];
+
+    // Skip empty rows and example rows
+    if (!transId || !category) continue;
+    var transIdStr = String(transId).trim();
+    if (transIdStr.indexOf("EXAMPLE") >= 0 || transIdStr === "ABC123" ||
+        transIdStr === "XYZ789" || transIdStr === "DEF456" || transIdStr === "GHI789") {
+      continue;
+    }
+
+    if (!overrides[transIdStr]) {
+      overrides[transIdStr] = {};
+    }
+
+    var itemKey = itemName ? String(itemName).trim() : "*";
+    overrides[transIdStr][itemKey] = category;
+  }
+
+  return overrides;
+}
+
+/**
+ * Maps detailed categories to major categories
+ * Priority Order (highest to lowest):
+ * 1. Item Transaction Override (specific transaction + item)
+ * 2. Data Cleanup mappings (item name -> category)
+ * 3. Category Override - Item Name match
+ * 4. Category Override - Category match
+ * 5. Default category logic
+ */
+function getMajorCategory(category, itemName, transactionId, overridesMaps) {
+  var item = itemName ? String(itemName).toLowerCase().trim() : null;
+  var cat = category ? String(category).toLowerCase().trim() : "";
+
+  // If no overrides maps provided, load them (for backward compatibility)
+  if (!overridesMaps) {
+    overridesMaps = {
+      transactionOverrides: getItemTransactionOverridesMap(),
+      dataCleanup: getDataCleanupMappings(),
+      categoryOverrides: null  // Will load from sheet below
+    };
+  }
+
+  // Priority 1: Item Transaction Override (in-memory, not modifying sheet)
+  if (transactionId && overridesMaps.transactionOverrides) {
+    var transOverrides = overridesMaps.transactionOverrides[transactionId];
+    if (transOverrides) {
+      // Check for wildcard first
+      if (transOverrides["*"]) {
+        return transOverrides["*"];
+      }
+      // Check for specific item match
+      if (item && transOverrides[itemName]) {
+        return transOverrides[itemName];
+      }
+      // Check case-insensitive item match
+      for (var key in transOverrides) {
+        if (key !== "*" && item && key.toLowerCase() === item) {
+          return transOverrides[key];
         }
       }
     }
   }
-  
-  // If found in override, cache and return
+
+  // Priority 2: Data Cleanup mappings (item name -> category)
+  if (item && overridesMaps.dataCleanup && overridesMaps.dataCleanup[item]) {
+    var cleanupCategory = overridesMaps.dataCleanup[item];
+    // Data Cleanup stores the raw category - need to map to major category
+    return getDefaultMajorCategory(String(cleanupCategory).toLowerCase().trim());
+  }
+
+  // Check cache for remaining lookups
+  var cache = CacheService.getScriptCache();
+  var cacheKey = "majorCat_" + cat + "_" + (item || "");
+  var cached = cache.get(cacheKey);
+
+  if (cached !== null) {
+    return cached;
+  }
+
+  var result = null;
+
+  // Priority 3 & 4: Category Override sheet (Item Name > Category)
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var overrideSheet = ss.getSheetByName("Category Override");
+
+  if (overrideSheet) {
+    var lastRow = overrideSheet.getLastRow();
+    if (lastRow > 20) {  // Real data starts after examples (row 20+)
+      var data = overrideSheet.getRange(21, 1, lastRow - 20, 3).getValues();
+
+      for (var i = 0; i < data.length; i++) {
+        var overrideCat = data[i][0];
+        var overrideItem = data[i][1];
+        var majorCat = data[i][2];
+
+        if (!majorCat) continue;
+
+        // Skip if this looks like example data
+        var overrideCatStr = overrideCat ? String(overrideCat) : "";
+        if (overrideCatStr.indexOf("EXAMPLE") >= 0 || overrideCatStr === "Bay Rental") {
+          continue;
+        }
+
+        // Priority 3: Item Name match (HIGHEST from sheet)
+        if (item && overrideItem && String(overrideItem).toLowerCase().trim() === item) {
+          result = majorCat;
+          break;
+        }
+
+        // Priority 4: Category match
+        if (!result && overrideCat && String(overrideCat).toLowerCase().trim() === cat) {
+          result = majorCat;
+        }
+      }
+    }
+
+    // Also check rows 6-20 for any real overrides (backwards compatibility)
+    if (!result && lastRow >= 6) {
+      var earlyData = overrideSheet.getRange(6, 1, Math.min(lastRow - 5, 15), 3).getValues();
+
+      for (var i = 0; i < earlyData.length; i++) {
+        var overrideCat = earlyData[i][0];
+        var overrideItem = earlyData[i][1];
+        var majorCat = earlyData[i][2];
+
+        if (!majorCat) continue;
+
+        // Skip example/instruction rows
+        var overrideCatStr = overrideCat ? String(overrideCat) : "";
+        if (overrideCatStr.indexOf("Valid") >= 0 || overrideCatStr.indexOf("EXAMPLE") >= 0 ||
+            overrideCatStr === "Food" || overrideCatStr === "Beverage" ||
+            overrideCatStr === "Golf" || overrideCatStr === "Membership" ||
+            overrideCatStr === "Miscellaneous" || overrideCatStr === "Event" ||
+            overrideCatStr === "Bay Rental") {
+          continue;
+        }
+
+        if (item && overrideItem && String(overrideItem).toLowerCase().trim() === item) {
+          result = majorCat;
+          break;
+        }
+
+        if (!result && overrideCat && String(overrideCat).toLowerCase().trim() === cat) {
+          result = majorCat;
+        }
+      }
+    }
+  }
+
   if (result) {
     cache.put(cacheKey, result, 360);
     return result;
   }
-  
-  // Not in override sheet, use default logic
-  result = getDefaultMajorCategory(cat);
-  
-  // Cache the default result too
+
+  // Priority 5: Default category logic
+  // Handle NULL/empty categories - treat as Miscellaneous
+  if (!cat || cat === "" || cat === "uncategorized" || cat === "none") {
+    result = "Miscellaneous";
+  } else {
+    result = getDefaultMajorCategory(cat);
+  }
+
   cache.put(cacheKey, result, 360);
-  
   return result;
 }
 

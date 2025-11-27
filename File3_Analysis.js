@@ -20,52 +20,74 @@
 
 /**
  * Get top spenders excluding events (with date filtering)
+ * FIXED: Uses item-level Gross Sales for consistent calculations
+ * FIXED: Applies all category overrides and Data Cleanup mappings
  */
 function getTopSpenders() {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
-  
+
   var transSheet = ss.getSheetByName("Square Transactions Export");
   var transData = transSheet.getDataRange().getValues();
   var transHeaders = transData[0];
-  
+
   var customerIdCol = transHeaders.indexOf("Customer ID");
-  var collectedCol = transHeaders.indexOf("Total Collected");
   var transIdCol = transHeaders.indexOf("Transaction ID");
   var transDateCol = transHeaders.indexOf("Date");
-  
+
   var itemSheet = ss.getSheetByName("Square Item Detail Export");
   var itemData = itemSheet.getDataRange().getValues();
   var itemHeaders = itemData[0];
   var itemTransIdCol = itemHeaders.indexOf("Transaction ID");
   var itemCategoryCol = itemHeaders.indexOf("Category");
-  
+  var itemNameCol = itemHeaders.indexOf("Item");
+  var itemGrossCol = itemHeaders.indexOf("Gross Sales");
+
+  // Load all overrides ONCE
+  var overridesMaps = {
+    transactionOverrides: getItemTransactionOverridesMap(),
+    dataCleanup: getDataCleanupMappings(),
+    categoryOverrides: null
+  };
+
+  // Build transaction date and customer lookup
+  var transactionDates = {};
+  var transactionCustomers = {};
+  for (var i = 1; i < transData.length; i++) {
+    var transId = transData[i][transIdCol];
+    transactionDates[transId] = transData[i][transDateCol];
+    transactionCustomers[transId] = transData[i][customerIdCol];
+  }
+
+  // First pass: identify event transactions
   var eventTransactions = {};
   for (var i = 1; i < itemData.length; i++) {
     var transId = itemData[i][itemTransIdCol];
     var category = itemData[i][itemCategoryCol];
-    if (category && String(category).toLowerCase().trim() === "event") {
+    var itemName = itemData[i][itemNameCol];
+
+    if (!isDateInRange(transactionDates[transId])) continue;
+
+    var majorCategory = getMajorCategory(category, itemName, transId, overridesMaps);
+    if (majorCategory === "Event") {
       eventTransactions[transId] = true;
     }
   }
-  
+
+  // Calculate spending from items (excluding events)
   var customerSpending = {};
-  
-  for (var i = 1; i < transData.length; i++) {
-    var date = transData[i][transDateCol];
-    
-    if (!isDateInRange(date)) {
-      continue;
-    }
-    
-    var customerId = transData[i][customerIdCol];
-    var revenue = parseFloat(transData[i][collectedCol]) || 0;
-    var transId = transData[i][transIdCol];
-    
-    if (customerId && !eventTransactions[transId]) {
-      customerSpending[customerId] = (customerSpending[customerId] || 0) + revenue;
+  for (var i = 1; i < itemData.length; i++) {
+    var transId = itemData[i][itemTransIdCol];
+    var sales = parseFloat(itemData[i][itemGrossCol]) || 0;
+
+    if (!isDateInRange(transactionDates[transId])) continue;
+    if (eventTransactions[transId]) continue;
+
+    var customerId = transactionCustomers[transId];
+    if (customerId) {
+      customerSpending[customerId] = (customerSpending[customerId] || 0) + sales;
     }
   }
-  
+
   var customerSheet = ss.getSheetByName("Square Customer Export");
   var customerData = customerSheet.getDataRange().getValues();
   var customerHeaders = customerData[0];
@@ -73,7 +95,7 @@ function getTopSpenders() {
   var custFirstCol = customerHeaders.indexOf("First Name");
   var custLastCol = customerHeaders.indexOf("Last Name");
   var custEmailCol = customerHeaders.indexOf("Email Address");
-  
+
   var customerIdToName = {};
   for (var i = 1; i < customerData.length; i++) {
     var id = customerData[i][custIdCol];
@@ -83,47 +105,51 @@ function getTopSpenders() {
     var name = (first + " " + last).trim() || email || "Unknown";
     customerIdToName[id] = name;
   }
-  
+
   var topSpenders = [];
   for (var customerId in customerSpending) {
     var name = customerIdToName[customerId] || customerId;
     topSpenders.push({name: name, spend: customerSpending[customerId].toFixed(2)});
   }
   topSpenders.sort(function(a, b) { return parseFloat(b.spend) - parseFloat(a.spend); });
-  
+
   return topSpenders.slice(0, 10);
 }
 
 /**
  * Get top spenders excluding events AND memberships
+ * FIXED: Uses consistent getMajorCategory with all overrides
  */
 function getTopSpendersExcludingMembershipsEvents() {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
   var transSheet = ss.getSheetByName("Square Transactions Export");
   var itemSheet = ss.getSheetByName("Square Item Detail Export");
-  
+
   if (!transSheet || !itemSheet) {
     return [];
   }
-  
+
   var transData = transSheet.getDataRange().getValues();
   var itemData = itemSheet.getDataRange().getValues();
   var transHeaders = transData[0];
   var itemHeaders = itemData[0];
-  
+
   var transCustomerIdCol = transHeaders.indexOf("Customer ID");
   var transIdCol = transHeaders.indexOf("Transaction ID");
   var transDateCol = transHeaders.indexOf("Date");
-  
+
   var itemTransIdCol = itemHeaders.indexOf("Transaction ID");
   var itemCategoryCol = itemHeaders.indexOf("Category");
   var itemGrossCol = itemHeaders.indexOf("Gross Sales");
   var itemNameCol = itemHeaders.indexOf("Item");
-  
-  // Get overrides ONCE at the start - they're now cached internally
-  var categoryOverrides = getCategoryOverrides();
-  var transOverrides = getTransactionOverrides();
-  
+
+  // Load all overrides ONCE
+  var overridesMaps = {
+    transactionOverrides: getItemTransactionOverridesMap(),
+    dataCleanup: getDataCleanupMappings(),
+    categoryOverrides: null
+  };
+
   // Build transaction to customer map and date map
   var transactionToCustomer = {};
   var transactionDates = {};
@@ -131,54 +157,45 @@ function getTopSpendersExcludingMembershipsEvents() {
     var transId = transData[i][transIdCol];
     var customerId = transData[i][transCustomerIdCol];
     var date = transData[i][transDateCol];
-    
-    if (transId && customerId) {
+
+    if (transId) {
       transactionToCustomer[transId] = customerId;
       transactionDates[transId] = date;
     }
   }
-  
+
   // Calculate spending per customer (excluding Events and Memberships)
   var customerSpend = {};
-  
+
   for (var i = 1; i < itemData.length; i++) {
     var transId = itemData[i][itemTransIdCol];
     var itemName = itemData[i][itemNameCol];
     var category = itemData[i][itemCategoryCol];
     var grossSales = parseFloat(itemData[i][itemGrossCol]) || 0;
-    
-    // Check date range (uses cached settings)
+
     if (!isDateInRange(transactionDates[transId])) {
       continue;
     }
-    
-    // Apply overrides (from cached maps)
-    if (transOverrides[transId]) {
-      category = transOverrides[transId];
-    } else if (itemName && categoryOverrides[itemName.toLowerCase()]) {
-      category = categoryOverrides[itemName.toLowerCase()];
-    }
-    
-    // getMajorCategory now checks item name first, then category
-    var majorCat = getMajorCategory(category, itemName);
-    
+
+    // Use consistent getMajorCategory with all overrides
+    var majorCat = getMajorCategory(category, itemName, transId, overridesMaps);
+
     // Skip Events and Memberships
     if (majorCat === "Event" || majorCat === "Membership") {
       continue;
     }
-    
-    // Get customer ID for this transaction
+
     var customerId = transactionToCustomer[transId];
     if (!customerId) {
       continue;
     }
-    
+
     if (!customerSpend[customerId]) {
       customerSpend[customerId] = 0;
     }
     customerSpend[customerId] += grossSales;
   }
-  
+
   // Get customer names
   var customerSheet = ss.getSheetByName("Square Customer Export");
   var customerData = customerSheet.getDataRange().getValues();
@@ -187,7 +204,7 @@ function getTopSpendersExcludingMembershipsEvents() {
   var custFirstCol = customerHeaders.indexOf("First Name");
   var custLastCol = customerHeaders.indexOf("Last Name");
   var custEmailCol = customerHeaders.indexOf("Email Address");
-  
+
   var customerIdToName = {};
   for (var i = 1; i < customerData.length; i++) {
     var id = customerData[i][custIdCol];
@@ -197,8 +214,7 @@ function getTopSpendersExcludingMembershipsEvents() {
     var name = (first + " " + last).trim() || email || "Unknown";
     customerIdToName[id] = name;
   }
-  
-  // Build final list
+
   var customers = [];
   for (var customerId in customerSpend) {
     customers.push({
@@ -206,43 +222,48 @@ function getTopSpendersExcludingMembershipsEvents() {
       spend: customerSpend[customerId].toFixed(2)
     });
   }
-  
+
   customers.sort(function(a, b) {
     return parseFloat(b.spend) - parseFloat(a.spend);
   });
-  
+
   return customers.slice(0, 10);
 }
 
 /**
  * Get top spenders by specific category
+ * FIXED: Uses consistent getMajorCategory with all overrides
  */
 function getTopSpendersByCategory(category) {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
   var transSheet = ss.getSheetByName("Square Transactions Export");
   var itemSheet = ss.getSheetByName("Square Item Detail Export");
-  
+
   if (!transSheet || !itemSheet) {
     return [];
   }
-  
+
   var transData = transSheet.getDataRange().getValues();
   var itemData = itemSheet.getDataRange().getValues();
   var transHeaders = transData[0];
   var itemHeaders = itemData[0];
-  
+
   var transCustomerIdCol = transHeaders.indexOf("Customer ID");
   var transIdCol = transHeaders.indexOf("Transaction ID");
   var transDateCol = transHeaders.indexOf("Date");
-  
+
   var itemTransIdCol = itemHeaders.indexOf("Transaction ID");
   var itemCategoryCol = itemHeaders.indexOf("Category");
   var itemGrossCol = itemHeaders.indexOf("Gross Sales");
   var itemNameCol = itemHeaders.indexOf("Item");
-  
-  var categoryOverrides = getCategoryOverrides();
-  var transOverrides = getTransactionOverrides();
-  
+
+  // Load all overrides ONCE
+  var overridesMaps = {
+    transactionOverrides: getItemTransactionOverridesMap(),
+    dataCleanup: getDataCleanupMappings(),
+    categoryOverrides: null
+  };
+
   // Build transaction to customer map and date map
   var transactionToCustomer = {};
   var transactionDates = {};
@@ -250,36 +271,29 @@ function getTopSpendersByCategory(category) {
     var transId = transData[i][transIdCol];
     var customerId = transData[i][transCustomerIdCol];
     var date = transData[i][transDateCol];
-    
-    if (transId && customerId) {
+
+    if (transId) {
       transactionToCustomer[transId] = customerId;
       transactionDates[transId] = date;
     }
   }
-  
+
   // Calculate spending per customer for this category
   var customerSpend = {};
-  
+
   for (var i = 1; i < itemData.length; i++) {
     var transId = itemData[i][itemTransIdCol];
     var itemName = itemData[i][itemNameCol];
     var itemCategory = itemData[i][itemCategoryCol];
     var grossSales = parseFloat(itemData[i][itemGrossCol]) || 0;
-    
-    // Check date range
+
     if (!isDateInRange(transactionDates[transId])) {
       continue;
     }
-    
-    // Apply overrides
-    if (transOverrides[transId]) {
-      itemCategory = transOverrides[transId];
-    } else if (itemName && categoryOverrides[itemName.toLowerCase()]) {
-      itemCategory = categoryOverrides[itemName.toLowerCase()];
-    }
-    
-    var majorCat = getMajorCategory(itemCategory, itemName);
-    
+
+    // Use consistent getMajorCategory with all overrides
+    var majorCat = getMajorCategory(itemCategory, itemName, transId, overridesMaps);
+
     // For F&B category, check both Food and Beverage
     var matchesCategory = false;
     if (category === "F&B") {
@@ -287,23 +301,22 @@ function getTopSpendersByCategory(category) {
     } else {
       matchesCategory = (majorCat === category);
     }
-    
+
     if (!matchesCategory) {
       continue;
     }
-    
-    // Get customer ID for this transaction
+
     var customerId = transactionToCustomer[transId];
     if (!customerId) {
       continue;
     }
-    
+
     if (!customerSpend[customerId]) {
       customerSpend[customerId] = 0;
     }
     customerSpend[customerId] += grossSales;
   }
-  
+
   // Get customer names
   var customerSheet = ss.getSheetByName("Square Customer Export");
   var customerData = customerSheet.getDataRange().getValues();
@@ -312,7 +325,7 @@ function getTopSpendersByCategory(category) {
   var custFirstCol = customerHeaders.indexOf("First Name");
   var custLastCol = customerHeaders.indexOf("Last Name");
   var custEmailCol = customerHeaders.indexOf("Email Address");
-  
+
   var customerIdToName = {};
   for (var i = 1; i < customerData.length; i++) {
     var id = customerData[i][custIdCol];
@@ -322,8 +335,7 @@ function getTopSpendersByCategory(category) {
     var name = (first + " " + last).trim() || email || "Unknown";
     customerIdToName[id] = name;
   }
-  
-  // Build final list
+
   var customers = [];
   for (var customerId in customerSpend) {
     customers.push({
@@ -331,11 +343,11 @@ function getTopSpendersByCategory(category) {
       spend: customerSpend[customerId].toFixed(2)
     });
   }
-  
+
   customers.sort(function(a, b) {
     return parseFloat(b.spend) - parseFloat(a.spend);
   });
-  
+
   return customers.slice(0, 10);
 }
 
@@ -507,22 +519,29 @@ function runBonusInsightsOnly() {
 // MASTER DATA POPULATION
 // ============================================
 
+/**
+ * Populates the Master Data sheet with customer-level metrics
+ * FIXED: Includes ALL customers with transactions (not just those in customer export)
+ * FIXED: Calculates Lifetime Spend from actual transactions (not pre-calculated value)
+ * FIXED: Excludes event-only customers when events are excluded
+ * FIXED: Applies all category overrides for F&B calculation
+ */
 function populateMasterData() {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
   var masterSheet = ss.getSheetByName("Master Data");
-  
+
   if (!masterSheet) {
     masterSheet = ss.insertSheet("Master Data");
   }
-  
+
   masterSheet.clear();
-  
+
   var dateSettings = getDateRangeSettings();
-  
+
   masterSheet.getRange("A1").setValue("👥 MASTER DATA - Customer-Level Metrics");
   masterSheet.getRange("A1").setFontSize(14).setFontWeight("bold").setBackground("#4285F4").setFontColor("white");
   masterSheet.getRange("A2").setValue("Date Range: " + dateSettings.label + " | Last Updated: " + new Date());
-  
+
   var headers = [
     "Customer ID",
     "First Name",
@@ -540,51 +559,59 @@ function populateMasterData() {
     "Days Since Last Visit",
     "Previous Envision Customer?",
     "F&B Total Spend",
-    "F&B % of Total Spend"
+    "F&B % of Total Spend",
+    "Event Only Customer"
   ];
-  
+
   masterSheet.getRange(4, 1, 1, headers.length).setValues([headers]);
   masterSheet.getRange(4, 1, 1, headers.length).setFontWeight("bold").setBackground("#E8E8E8");
-  
+
   var customerSheet = ss.getSheetByName("Square Customer Export");
   var customerData = customerSheet.getDataRange().getValues();
   var customerHeaders = customerData[0];
-  
+
   var customerListSheet = ss.getSheetByName("Customer List");
   var customerListData = customerListSheet.getDataRange().getValues();
   var customerListHeaders = customerListData[0];
-  
+
   var transSheet = ss.getSheetByName("Square Transactions Export");
   var transData = transSheet.getDataRange().getValues();
   var transHeaders = transData[0];
-  
+
   var bookingSheet = ss.getSheetByName("Apex Bookings Export");
   var bookingData = bookingSheet.getDataRange().getValues();
   var bookingHeaders = bookingData[0];
-  
+
   var itemSheet = ss.getSheetByName("Square Item Detail Export");
   var itemData = itemSheet.getDataRange().getValues();
   var itemHeaders = itemData[0];
-  
+
   var envisionSheet = ss.getSheetByName("Envision Customer List");
   var envisionData = envisionSheet.getDataRange().getValues();
-  
+
+  // Load all overrides ONCE for performance
+  var overridesMaps = {
+    transactionOverrides: getItemTransactionOverridesMap(),
+    dataCleanup: getDataCleanupMappings(),
+    categoryOverrides: null
+  };
+
   // Build Envision lookup
   var envisionByEmail = {};
   var envisionByPhone = {};
   var envisionByName = {};
-  
+
   for (var i = 0; i < envisionData.length; i++) {
     var firstName = normalizeString(envisionData[i][0]);
     var lastName = normalizeString(envisionData[i][1]);
     var email = normalizeEmail(envisionData[i][2]);
     var phone = normalizePhone(envisionData[i][3]);
-    
+
     if (email) envisionByEmail[email] = true;
     if (phone) envisionByPhone[phone] = true;
     if (firstName && lastName) envisionByName[firstName + "|" + lastName] = true;
   }
-  
+
   var customerIdCol = customerHeaders.indexOf("Square Customer ID");
   var firstNameCol = customerHeaders.indexOf("First Name");
   var lastNameCol = customerHeaders.indexOf("Last Name");
@@ -592,12 +619,10 @@ function populateMasterData() {
   var phoneCol = customerHeaders.indexOf("Phone Number");
   var firstVisitCol = customerHeaders.indexOf("First Visit");
   var lastVisitCol = customerHeaders.indexOf("Last Visit");
-  var transCountCol = customerHeaders.indexOf("Transaction Count");
-  var lifetimeSpendCol = customerHeaders.indexOf("Lifetime Spend");
-  
+
   var clEmailCol = customerListHeaders.indexOf("Email");
   var clDateAddedCol = customerListHeaders.indexOf("Date Added");
-  
+
   var customerListLookup = {};
   for (var i = 1; i < customerListData.length; i++) {
     var email = customerListData[i][clEmailCol];
@@ -607,127 +632,188 @@ function populateMasterData() {
       };
     }
   }
-  
+
   var bookingEmailCol = bookingHeaders.indexOf("Email");
   var bookingDateCol = bookingHeaders.indexOf("Date");
   var bookingsByEmail = {};
   for (var i = 1; i < bookingData.length; i++) {
     var email = bookingData[i][bookingEmailCol];
     var date = bookingData[i][bookingDateCol];
-    
+
     if (!isDateInRange(date)) {
       continue;
     }
-    
+
     if (email) {
       email = normalizeEmail(email);
       bookingsByEmail[email] = (bookingsByEmail[email] || 0) + 1;
     }
   }
-  
+
   var itemTransIdCol = itemHeaders.indexOf("Transaction ID");
   var itemCategoryCol = itemHeaders.indexOf("Category");
   var itemSalesCol = itemHeaders.indexOf("Gross Sales");
   var itemNameCol = itemHeaders.indexOf("Item");
-  
+
   var transDateCol = transHeaders.indexOf("Date");
   var transTransIdCol = transHeaders.indexOf("Transaction ID");
-  
+  var transCustomerIdCol = transHeaders.indexOf("Customer ID");
+
+  // Build transaction date lookup
   var transactionDates = {};
+  var transactionCustomers = {};
   for (var i = 1; i < transData.length; i++) {
     var transId = transData[i][transTransIdCol];
     var date = transData[i][transDateCol];
+    var customerId = transData[i][transCustomerIdCol];
     transactionDates[transId] = date;
+    transactionCustomers[transId] = customerId;
   }
-  
-  var fbByTransId = {};
+
+  // First pass: identify event transactions
+  var eventTransactions = {};
   for (var i = 1; i < itemData.length; i++) {
     var transId = itemData[i][itemTransIdCol];
-    
+    var category = itemData[i][itemCategoryCol];
+    var itemName = itemData[i][itemNameCol];
+
     if (!isDateInRange(transactionDates[transId])) {
       continue;
     }
-    
-    var category = itemData[i][itemCategoryCol];
-    var sales = parseFloat(itemData[i][itemSalesCol]) || 0;
-    var itemName = (itemData[i][itemNameCol] || "").toLowerCase();
-    
-    if (category === "Food" || category === "Beverage" ||
-        itemName.includes("beer") || itemName.includes("wine") || itemName.includes("drink")) {
-      fbByTransId[transId] = (fbByTransId[transId] || 0) + sales;
+
+    var majorCategory = getMajorCategory(category, itemName, transId, overridesMaps);
+    if (majorCategory === "Event") {
+      eventTransactions[transId] = true;
     }
   }
-  
-  var transCustomerIdCol = transHeaders.indexOf("Customer ID");
-  var transIdCol = transHeaders.indexOf("Transaction ID");
-  
-  var fbByCustomerId = {};
-  var visitsByCustomerId = {};
-  
-  for (var i = 1; i < transData.length; i++) {
-    var date = transData[i][transDateCol];
-    
-    if (!isDateInRange(date)) {
+
+  // Calculate per-customer metrics from item data
+  // This tracks ALL customers with transactions, not just those in customer export
+  var customerMetrics = {};  // customerId -> { spend, fbSpend, transactions, eventTransactions, visits }
+
+  for (var i = 1; i < itemData.length; i++) {
+    var transId = itemData[i][itemTransIdCol];
+    var category = itemData[i][itemCategoryCol];
+    var itemName = itemData[i][itemNameCol];
+    var sales = parseFloat(itemData[i][itemSalesCol]) || 0;
+
+    if (!isDateInRange(transactionDates[transId])) {
       continue;
     }
-    
-    var customerId = transData[i][transCustomerIdCol];
-    var transId = transData[i][transIdCol];
-    
-    if (customerId) {
-      if (fbByTransId[transId]) {
-        fbByCustomerId[customerId] = (fbByCustomerId[customerId] || 0) + fbByTransId[transId];
-      }
-      
-      if (date) {
-        if (!visitsByCustomerId[customerId]) {
-          visitsByCustomerId[customerId] = [];
-        }
-        visitsByCustomerId[customerId].push(date);
+
+    var customerId = transactionCustomers[transId];
+    if (!customerId) continue;
+
+    if (!customerMetrics[customerId]) {
+      customerMetrics[customerId] = {
+        spend: 0,
+        fbSpend: 0,
+        transactions: new Set(),
+        eventTransactions: new Set(),
+        nonEventTransactions: new Set(),
+        visits: []
+      };
+    }
+
+    var isEventTrans = eventTransactions[transId];
+    var majorCategory = getMajorCategory(category, itemName, transId, overridesMaps);
+
+    if (isEventTrans) {
+      customerMetrics[customerId].eventTransactions.add(transId);
+    } else {
+      // Only count non-event spending
+      customerMetrics[customerId].spend += sales;
+      customerMetrics[customerId].nonEventTransactions.add(transId);
+
+      // Track F&B spending
+      if (majorCategory === "Food" || majorCategory === "Beverage") {
+        customerMetrics[customerId].fbSpend += sales;
       }
     }
+
+    customerMetrics[customerId].transactions.add(transId);
   }
-  
+
+  // Track visits by customer (transaction dates)
+  for (var i = 1; i < transData.length; i++) {
+    var transId = transData[i][transTransIdCol];
+    var date = transData[i][transDateCol];
+    var customerId = transData[i][transCustomerIdCol];
+
+    if (!isDateInRange(date)) continue;
+    if (!customerId || !customerMetrics[customerId]) continue;
+
+    customerMetrics[customerId].visits.push(date);
+  }
+
+  // Build customer info lookup from Square Customer Export
+  var customerInfoLookup = {};
+  for (var i = 1; i < customerData.length; i++) {
+    var id = customerData[i][customerIdCol];
+    customerInfoLookup[id] = {
+      firstName: customerData[i][firstNameCol] || "",
+      lastName: customerData[i][lastNameCol] || "",
+      email: customerData[i][emailCol] || "",
+      phone: customerData[i][phoneCol] || "",
+      firstVisit: customerData[i][firstVisitCol],
+      lastVisit: customerData[i][lastVisitCol]
+    };
+  }
+
   var masterRows = [];
   var today = new Date();
-  
-  for (var i = 1; i < customerData.length; i++) {
-    var customerId = customerData[i][customerIdCol];
-    var firstVisit = customerData[i][firstVisitCol];
-    
-    if (!isDateInRange(firstVisit)) {
-      continue;
-    }
-    
-    var firstName = customerData[i][firstNameCol] || "";
-    var lastName = customerData[i][lastNameCol] || "";
-    var email = customerData[i][emailCol] || "";
-    var phone = customerData[i][phoneCol] || "";
-    var lastVisit = customerData[i][lastVisitCol];
-    var transCount = customerData[i][transCountCol] || 0;
-    var lifetimeSpend = customerData[i][lifetimeSpendCol] || 0;
-    
+
+  // Process ALL customers with transactions (from customerMetrics)
+  for (var customerId in customerMetrics) {
+    var metrics = customerMetrics[customerId];
+
+    // Check if this is an event-only customer
+    var isEventOnlyCustomer = metrics.nonEventTransactions.size === 0 && metrics.eventTransactions.size > 0;
+
+    // Get customer info (from export if available, otherwise minimal)
+    var customerInfo = customerInfoLookup[customerId] || {
+      firstName: "",
+      lastName: "",
+      email: "",
+      phone: "",
+      firstVisit: null,
+      lastVisit: null
+    };
+
+    var firstName = customerInfo.firstName;
+    var lastName = customerInfo.lastName;
+    var email = customerInfo.email;
+    var phone = customerInfo.phone;
+
+    // Calculate first/last visit from actual transactions in range
+    var visits = metrics.visits.sort(function(a, b) { return a - b; });
+    var firstVisit = visits.length > 0 ? visits[0] : customerInfo.firstVisit;
+    var lastVisit = visits.length > 0 ? visits[visits.length - 1] : customerInfo.lastVisit;
+
+    // Calculate lifetime spend from actual transactions (excluding events)
+    var lifetimeSpend = metrics.spend;
+    var transCount = metrics.nonEventTransactions.size;
+
     var dateAdded = "";
     var normEmail = normalizeEmail(email);
     if (normEmail && customerListLookup[normEmail]) {
       dateAdded = customerListLookup[normEmail].dateAdded || "";
     }
-    
+
     var numBookings = 0;
     if (normEmail && bookingsByEmail[normEmail]) {
       numBookings = bookingsByEmail[normEmail];
     }
-    
+
     var avgDaysBetween = "";
-    if (visitsByCustomerId[customerId] && visitsByCustomerId[customerId].length > 1) {
-      var visits = visitsByCustomerId[customerId].sort(function(a,b){return a-b;});
+    if (visits.length > 1) {
       var totalDays = 0;
       for (var v = 1; v < visits.length; v++) {
         totalDays += (visits[v] - visits[v-1]) / (1000*60*60*24);
       }
       avgDaysBetween = (totalDays / (visits.length - 1)).toFixed(1);
     }
-    
+
     var daysSinceFirst = "";
     var daysSinceLast = "";
     if (firstVisit && firstVisit instanceof Date) {
@@ -736,12 +822,12 @@ function populateMasterData() {
     if (lastVisit && lastVisit instanceof Date) {
       daysSinceLast = Math.floor((today - lastVisit) / (1000*60*60*24));
     }
-    
+
     var isEnvision = "";
     var normPhone = normalizePhone(phone);
     var normFirst = normalizeString(firstName);
     var normLast = normalizeString(lastName);
-    
+
     if ((normEmail && envisionByEmail[normEmail]) ||
         (normPhone && envisionByPhone[normPhone]) ||
         (normFirst && normLast && envisionByName[normFirst + "|" + normLast])) {
@@ -749,10 +835,10 @@ function populateMasterData() {
     } else {
       isEnvision = "No";
     }
-    
-    var fbSpend = fbByCustomerId[customerId] || 0;
+
+    var fbSpend = metrics.fbSpend;
     var fbPercent = lifetimeSpend > 0 ? fbSpend / lifetimeSpend : 0;
-    
+
     masterRows.push([
       customerId,
       firstName,
@@ -770,18 +856,43 @@ function populateMasterData() {
       daysSinceLast,
       isEnvision,
       fbSpend,
-      fbPercent
+      fbPercent,
+      isEventOnlyCustomer ? "Yes" : "No"
     ]);
   }
-  
+
+  // Sort by lifetime spend (descending)
+  masterRows.sort(function(a, b) {
+    return (b[9] || 0) - (a[9] || 0);
+  });
+
   if (masterRows.length > 0) {
     masterSheet.getRange(5, 1, masterRows.length, headers.length).setValues(masterRows);
-    
+
     masterSheet.getRange(5, 10, masterRows.length, 1).setNumberFormat("$#,##0.00");
     masterSheet.getRange(5, 16, masterRows.length, 1).setNumberFormat("$#,##0.00");
     masterSheet.getRange(5, 17, masterRows.length, 1).setNumberFormat("0.0%");
   }
-  
+
+  // Add summary row
+  var summaryRow = masterRows.length + 6;
+  var totalSpend = masterRows.reduce(function(sum, row) { return sum + (row[9] || 0); }, 0);
+  var totalFB = masterRows.reduce(function(sum, row) { return sum + (row[15] || 0); }, 0);
+  var nonEventCustomers = masterRows.filter(function(row) { return row[17] !== "Yes"; }).length;
+  var eventOnlyCustomers = masterRows.filter(function(row) { return row[17] === "Yes"; }).length;
+
+  masterSheet.getRange(summaryRow, 1).setValue("SUMMARY:");
+  masterSheet.getRange(summaryRow, 1).setFontWeight("bold");
+  masterSheet.getRange(summaryRow, 2, 1, 4).merge();
+  masterSheet.getRange(summaryRow, 2).setValue(
+    "Total Customers: " + masterRows.length +
+    " | Non-Event: " + nonEventCustomers +
+    " | Event-Only: " + eventOnlyCustomers +
+    " | Total Spend: $" + totalSpend.toFixed(2) +
+    " | Total F&B: $" + totalFB.toFixed(2)
+  );
+  masterSheet.getRange(summaryRow, 1, 1, 5).setBackground("#e8f0fe");
+
   masterSheet.autoResizeColumns(1, headers.length);
   masterSheet.setFrozenRows(4);
   masterSheet.setFrozenColumns(3);

@@ -247,33 +247,37 @@ function isDateInRange(date) {
 // MISC CATEGORY ANALYZER
 // ============================================
 
+/**
+ * Analyzes items categorized as Miscellaneous
+ * FIXED: Uses consistent getMajorCategory with all overrides
+ */
 function analyzeMiscItems() {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
   var ui = SpreadsheetApp.getUi();
-  
+
   var dateSettings = getDateRangeSettings();
-  
+
   var itemSheet = ss.getSheetByName("Square Item Detail Export");
   if (!itemSheet) {
     ui.alert('Error', 'Cannot find "Square Item Detail Export" sheet!', ui.ButtonSet.OK);
     return;
   }
-  
+
   var data = itemSheet.getDataRange().getValues();
   var headers = data[0];
-  
+
   var itemNameCol = headers.indexOf("Item");
   var categoryCol = headers.indexOf("Category");
   var grossSalesCol = headers.indexOf("Gross Sales");
   var transIdCol = headers.indexOf("Transaction ID");
-  
+
   // Get transaction dates for filtering
   var transSheet = ss.getSheetByName("Square Transactions Export");
   var transData = transSheet.getDataRange().getValues();
   var transHeaders = transData[0];
   var transDateCol = transHeaders.indexOf("Date");
   var transTransIdCol = transHeaders.indexOf("Transaction ID");
-  
+
   // Build transaction date map
   var transactionDates = {};
   for (var i = 1; i < transData.length; i++) {
@@ -283,33 +287,30 @@ function analyzeMiscItems() {
       transactionDates[transId] = date;
     }
   }
-  
-  // Get overrides
-  var categoryOverrides = getCategoryOverrides();
-  var transOverrides = getTransactionOverrides();
-  
+
+  // Load all overrides ONCE
+  var overridesMaps = {
+    transactionOverrides: getItemTransactionOverridesMap(),
+    dataCleanup: getDataCleanupMappings(),
+    categoryOverrides: null
+  };
+
   // Track misc items
   var miscItems = {};
-  
+
   for (var i = 1; i < data.length; i++) {
     var transId = data[i][transIdCol];
     var itemName = data[i][itemNameCol];
     var category = data[i][categoryCol];
     var grossSales = parseFloat(data[i][grossSalesCol]) || 0;
-    
+
     // Apply date filter
     if (!isDateInRange(transactionDates[transId])) {
       continue;
     }
-    
-    // Apply overrides
-    if (transOverrides[transId]) {
-      category = transOverrides[transId];
-    } else if (itemName && categoryOverrides[itemName.toLowerCase()]) {
-      category = categoryOverrides[itemName.toLowerCase()];
-    }
-    
-    var majorCategory = getMajorCategory(category, itemName);
+
+    // Use consistent getMajorCategory with all overrides
+    var majorCategory = getMajorCategory(category, itemName, transId, overridesMaps);
     
     // Only track Misc items
     if (majorCategory === "Miscellaneous") {
@@ -462,38 +463,45 @@ function suggestCategory(itemName, originalCategory) {
 // DAY VS NIGHT SPENDING ANALYZER
 // ============================================
 
+/**
+ * Analyzes spending patterns by time of day
+ * FIXED: Uses same calculation methods as dashboard for consistency
+ * FIXED: Applies all category overrides and Data Cleanup mappings
+ */
 function analyzeDayVsNight() {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
   var ui = SpreadsheetApp.getUi();
-  
+
   var dateSettings = getDateRangeSettings();
-  
+
   var transSheet = ss.getSheetByName("Square Transactions Export");
   var itemSheet = ss.getSheetByName("Square Item Detail Export");
-  
+
   if (!transSheet || !itemSheet) {
     ui.alert('Error', 'Missing required sheets: Square Transactions Export, Square Item Detail Export', ui.ButtonSet.OK);
     return;
   }
-  
+
   var transData = transSheet.getDataRange().getValues();
   var itemData = itemSheet.getDataRange().getValues();
   var transHeaders = transData[0];
   var itemHeaders = itemData[0];
-  
+
   var transIdCol = transHeaders.indexOf("Transaction ID");
   var transTimeCol = transHeaders.indexOf("Time");
   var transDateCol = transHeaders.indexOf("Date");
-  var transCollectedCol = transHeaders.indexOf("Total Collected");
-  
+
   var itemTransIdCol = itemHeaders.indexOf("Transaction ID");
   var itemNameCol = itemHeaders.indexOf("Item");
   var itemCategoryCol = itemHeaders.indexOf("Category");
   var itemGrossCol = itemHeaders.indexOf("Gross Sales");
-  
-  // Get overrides
-  var categoryOverrides = getCategoryOverrides();
-  var transOverrides = getTransactionOverrides();
+
+  // Load all overrides ONCE for performance
+  var overridesMaps = {
+    transactionOverrides: getItemTransactionOverridesMap(),
+    dataCleanup: getDataCleanupMappings(),
+    categoryOverrides: null
+  };
   
   // Track 4 time periods
   var periods = {
@@ -534,21 +542,29 @@ function analyzeDayVsNight() {
   // Build transaction time map and categorize items
   var transactionCategories = {};
   
-  // First pass: categorize all items
+  // Build transaction date lookup
+  var transactionDates = {};
+  var transactionTimes = {};
+  for (var i = 1; i < transData.length; i++) {
+    var transId = transData[i][transIdCol];
+    transactionDates[transId] = transData[i][transDateCol];
+    transactionTimes[transId] = transData[i][transTimeCol];
+  }
+
+  // First pass: categorize all items using consistent method
   for (var i = 1; i < itemData.length; i++) {
     var transId = itemData[i][itemTransIdCol];
     var category = itemData[i][itemCategoryCol];
     var itemName = itemData[i][itemNameCol];
     var grossSales = parseFloat(itemData[i][itemGrossCol]) || 0;
-    
-    // Apply overrides
-    if (transOverrides[transId]) {
-      category = transOverrides[transId];
-    } else if (itemName && categoryOverrides[itemName.toLowerCase()]) {
-      category = categoryOverrides[itemName.toLowerCase()];
+
+    // Apply date filter
+    if (!isDateInRange(transactionDates[transId])) {
+      continue;
     }
-    
-    var majorCat = getMajorCategory(category, itemName);
+
+    // Use consistent getMajorCategory with all overrides
+    var majorCat = getMajorCategory(category, itemName, transId, overridesMaps);
     
     // Skip Events and Memberships
     if (majorCat === "Event" || majorCat === "Membership") {
@@ -575,22 +591,15 @@ function analyzeDayVsNight() {
   }
   
   // Second pass: analyze by time period
-  for (var i = 1; i < transData.length; i++) {
-    var transId = transData[i][transIdCol];
-    var time = transData[i][transTimeCol];
-    var date = transData[i][transDateCol];
-    var collected = parseFloat(transData[i][transCollectedCol]) || 0;
-    
+  for (var transId in transactionCategories) {
+    var time = transactionTimes[transId];
+    var date = transactionDates[transId];
+
     // Apply date filter
     if (!isDateInRange(date)) {
       continue;
     }
-    
-    // Skip if no category data
-    if (!transactionCategories[transId]) {
-      continue;
-    }
-    
+
     // Determine time period
     var hour = getHourFromTime(time);
     if (hour === null) continue;

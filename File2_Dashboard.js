@@ -565,85 +565,157 @@ function getEnvisionMetrics() {
 
 /**
  * Extract revenue metrics for dashboard
+ * FIXED: Uses item-level Gross Sales consistently for accurate totals
+ * FIXED: Counts ALL non-zero transactions
+ * FIXED: Tracks ALL customers with transactions (not just those in customer export)
+ * FIXED: Applies all category overrides and Data Cleanup mappings
  */
 function getRevenueMetrics() {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
-  
+
   var transSheet = ss.getSheetByName("Square Transactions Export");
   var transData = transSheet.getDataRange().getValues();
   var transHeaders = transData[0];
-  
-  var collectedCol = transHeaders.indexOf("Total Collected");
+
   var netTotalCol = transHeaders.indexOf("Net Total");
   var tipCol = transHeaders.indexOf("Tip");
   var customerIdCol = transHeaders.indexOf("Customer ID");
   var transIdCol = transHeaders.indexOf("Transaction ID");
   var transDateCol = transHeaders.indexOf("Date");
-  
+
   var itemSheet = ss.getSheetByName("Square Item Detail Export");
   var itemData = itemSheet.getDataRange().getValues();
   var itemHeaders = itemData[0];
   var itemTransIdCol = itemHeaders.indexOf("Transaction ID");
   var itemCategoryCol = itemHeaders.indexOf("Category");
   var itemSalesCol = itemHeaders.indexOf("Gross Sales");
-  
-  var eventTransactions = {};
+  var itemNameCol = itemHeaders.indexOf("Item");
+
+  // Load all overrides ONCE for performance
+  var overridesMaps = {
+    transactionOverrides: getItemTransactionOverridesMap(),
+    dataCleanup: getDataCleanupMappings(),
+    categoryOverrides: null
+  };
+
+  // Build transaction date and customer lookup
+  var transactionDates = {};
+  var transactionCustomers = {};
+  var transactionNetTotals = {};
+  var transactionTips = {};
+
+  for (var i = 1; i < transData.length; i++) {
+    var transId = transData[i][transIdCol];
+    var date = transData[i][transDateCol];
+    var customerId = transData[i][customerIdCol];
+    var netTotal = parseFloat(transData[i][netTotalCol]) || 0;
+    var tip = parseFloat(transData[i][tipCol]) || 0;
+
+    if (transId) {
+      transactionDates[transId] = date;
+      transactionCustomers[transId] = customerId;
+      transactionNetTotals[transId] = netTotal;
+      transactionTips[transId] = tip;
+    }
+  }
+
+  // Calculate revenue from items (Gross Sales) - this is the authoritative source
+  var totalRevenue = 0;
   var eventRevenue = 0;
-  
+  var totalRevenueExcludingEvents = 0;
+  var totalNetRevenue = 0;
+  var totalTips = 0;
+
+  // Track transactions for counting
+  var allTransactionsInRange = {};
+  var eventTransactions = {};
+  var nonEventTransactions = {};
+  var customerSpendingExcludingEvents = {};
+  var eventCustomers = {};  // Track customers who have ONLY event transactions
+
+  // First pass: identify event transactions and calculate revenue from items
   for (var i = 1; i < itemData.length; i++) {
     var transId = itemData[i][itemTransIdCol];
     var category = itemData[i][itemCategoryCol];
+    var itemName = itemData[i][itemNameCol];
     var sales = parseFloat(itemData[i][itemSalesCol]) || 0;
-    
-    if (category && String(category).toLowerCase().trim() === "event") {
+
+    // Apply date filter
+    if (!isDateInRange(transactionDates[transId])) {
+      continue;
+    }
+
+    // Track that this transaction exists and has data
+    allTransactionsInRange[transId] = true;
+
+    // Get major category with all overrides applied
+    var majorCategory = getMajorCategory(category, itemName, transId, overridesMaps);
+
+    if (majorCategory === "Event") {
       eventTransactions[transId] = true;
       eventRevenue += sales;
     }
+
+    // Add to total revenue (with events)
+    totalRevenue += sales;
   }
-  
-  var totalRevenue = 0;
-  var totalNetRevenue = 0;
-  var totalTips = 0;
-  var totalRevenueExcludingEvents = 0;
-  var transCountExcludingEvents = 0;
-  var customerSpendingExcludingEvents = {};
-  
-  for (var i = 1; i < transData.length; i++) {
-    var transDate = transData[i][transDateCol];
-    
-    if (!isDateInRange(transDate)) {
+
+  // Second pass: calculate excluding events and track customers
+  for (var i = 1; i < itemData.length; i++) {
+    var transId = itemData[i][itemTransIdCol];
+    var sales = parseFloat(itemData[i][itemSalesCol]) || 0;
+
+    // Apply date filter
+    if (!isDateInRange(transactionDates[transId])) {
       continue;
     }
-    
-    var collected = parseFloat(transData[i][collectedCol]) || 0;
-    var netTotal = parseFloat(transData[i][netTotalCol]) || 0;
-    var tip = parseFloat(transData[i][tipCol]) || 0;
-    var customerId = transData[i][customerIdCol];
-    var transId = transData[i][transIdCol];
-    
-    totalRevenue += collected;
-    totalNetRevenue += netTotal;
-    totalTips += tip;
-    
+
+    // Only process non-event transactions
     if (!eventTransactions[transId]) {
-      totalRevenueExcludingEvents += collected;
-      transCountExcludingEvents++;
-      
+      nonEventTransactions[transId] = true;
+      totalRevenueExcludingEvents += sales;
+
+      // Track customer spending (excluding events)
+      var customerId = transactionCustomers[transId];
       if (customerId) {
-        customerSpendingExcludingEvents[customerId] = (customerSpendingExcludingEvents[customerId] || 0) + collected;
+        customerSpendingExcludingEvents[customerId] = (customerSpendingExcludingEvents[customerId] || 0) + sales;
+      }
+    } else {
+      // Track event customers
+      var customerId = transactionCustomers[transId];
+      if (customerId) {
+        eventCustomers[customerId] = true;
       }
     }
   }
-  
+
+  // Calculate net revenue and tips for transactions in range
+  for (var transId in allTransactionsInRange) {
+    if (transactionNetTotals[transId] !== undefined) {
+      totalNetRevenue += transactionNetTotals[transId];
+    }
+    if (transactionTips[transId] !== undefined) {
+      totalTips += transactionTips[transId];
+    }
+  }
+
+  // Count all non-zero non-event transactions
+  var transCountExcludingEvents = Object.keys(nonEventTransactions).length;
+
+  // Calculate average spend per visit
   var avgSpendPerVisit = transCountExcludingEvents > 0 ? totalRevenueExcludingEvents / transCountExcludingEvents : 0;
-  
+
+  // Calculate LTV: average spending per customer (excluding events)
+  // Only include customers who have non-event spending
   var customerLTVs = [];
   for (var customerId in customerSpendingExcludingEvents) {
-    customerLTVs.push(customerSpendingExcludingEvents[customerId]);
+    if (customerSpendingExcludingEvents[customerId] > 0) {
+      customerLTVs.push(customerSpendingExcludingEvents[customerId]);
+    }
   }
-  var avgCustomerLTV = customerLTVs.length > 0 ? 
+  var avgCustomerLTV = customerLTVs.length > 0 ?
     customerLTVs.reduce(function(a, b) { return a + b; }, 0) / customerLTVs.length : 0;
-  
+
   return {
     totalRevenue: totalRevenue.toFixed(2),
     totalNetRevenue: totalNetRevenue.toFixed(2),
@@ -652,32 +724,45 @@ function getRevenueMetrics() {
     eventRevenue: eventRevenue.toFixed(2),
     transactionsExclEvents: transCountExcludingEvents,
     avgSpend: avgSpendPerVisit.toFixed(2),
-    avgLTV: avgCustomerLTV.toFixed(2)
+    avgLTV: avgCustomerLTV.toFixed(2),
+    // Export for use by other functions
+    _customerSpending: customerSpendingExcludingEvents,
+    _eventCustomers: eventCustomers,
+    _transactionCount: Object.keys(allTransactionsInRange).length
   };
 }
 
 /**
  * Extract category metrics for dashboard
+ * FIXED: Uses same calculation method as getRevenueMetrics() for consistency
+ * FIXED: Applies all category overrides and Data Cleanup mappings
+ * FIXED: Ensures category totals = total revenue (no missing revenue)
  */
 function getCategoryMetrics() {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
-  
+
   var itemSheet = ss.getSheetByName("Square Item Detail Export");
   var itemData = itemSheet.getDataRange().getValues();
   var itemHeaders = itemData[0];
-  
+
   var categoryCol = itemHeaders.indexOf("Category");
   var itemNameCol = itemHeaders.indexOf("Item");
   var grossSalesCol = itemHeaders.indexOf("Gross Sales");
   var transIdCol = itemHeaders.indexOf("Transaction ID");
-  
+
   var transSheet = ss.getSheetByName("Square Transactions Export");
   var transData = transSheet.getDataRange().getValues();
   var transHeaders = transData[0];
-  var collectedCol = transHeaders.indexOf("Total Collected");
   var transactionIdCol = transHeaders.indexOf("Transaction ID");
   var transDateCol = transHeaders.indexOf("Date");
-  
+
+  // Load all overrides ONCE for performance
+  var overridesMaps = {
+    transactionOverrides: getItemTransactionOverridesMap(),
+    dataCleanup: getDataCleanupMappings(),
+    categoryOverrides: null
+  };
+
   // Build date map for transactions
   var transactionDates = {};
   for (var i = 1; i < transData.length; i++) {
@@ -685,34 +770,27 @@ function getCategoryMetrics() {
     var date = transData[i][transDateCol];
     transactionDates[transId] = date;
   }
-  
+
+  // First pass: identify event transactions with overrides applied
   var eventTransactions = {};
   for (var i = 1; i < itemData.length; i++) {
     var transId = itemData[i][transIdCol];
     var category = itemData[i][categoryCol];
-    if (category && String(category).toLowerCase().trim() === "event") {
+    var itemName = itemData[i][itemNameCol];
+
+    // Skip if not in date range
+    if (!isDateInRange(transactionDates[transId])) {
+      continue;
+    }
+
+    // Apply all overrides to get the real category
+    var majorCategory = getMajorCategory(category, itemName, transId, overridesMaps);
+    if (majorCategory === "Event") {
       eventTransactions[transId] = true;
     }
   }
-  
-  var totalRevenueExcludingEvents = 0;
-  var transCountExcludingEvents = 0;
-  
-  for (var i = 1; i < transData.length; i++) {
-    var transId = transData[i][transactionIdCol];
-    var revenue = parseFloat(transData[i][collectedCol]) || 0;
-    var date = transData[i][transDateCol];
-    
-    if (!isDateInRange(date)) {
-      continue;
-    }
-    
-    if (!eventTransactions[transId]) {
-      totalRevenueExcludingEvents += revenue;
-      transCountExcludingEvents++;
-    }
-  }
-  
+
+  // Initialize category totals
   var majorCategories = {
     "Food": 0,
     "Beverage": 0,
@@ -720,38 +798,57 @@ function getCategoryMetrics() {
     "Membership": 0,
     "Miscellaneous": 0
   };
-  
+
   var transactionsWithFB = new Set();
-  
+  var nonEventTransactions = new Set();
+  var totalRevenueExcludingEvents = 0;
+
+  // Second pass: calculate category revenue
   for (var i = 1; i < itemData.length; i++) {
     var transId = itemData[i][transIdCol];
-    
+
     if (!isDateInRange(transactionDates[transId])) {
       continue;
     }
-    
-    var category = itemData[i][categoryCol] || "Uncategorized";
+
+    var category = itemData[i][categoryCol];
     var itemName = itemData[i][itemNameCol];
     var sales = parseFloat(itemData[i][grossSalesCol]) || 0;
-    
-    var majorCategory = getMajorCategory(category, itemName);
-    
-    if (majorCategory !== "Event") {
-      majorCategories[majorCategory] += sales;
+
+    // Apply all overrides
+    var majorCategory = getMajorCategory(category, itemName, transId, overridesMaps);
+
+    // Skip events for category breakdown
+    if (majorCategory === "Event") {
+      continue;
     }
-    
-    if (!eventTransactions[transId]) {
-      if (majorCategory === "Food" || majorCategory === "Beverage") {
-        transactionsWithFB.add(transId);
-      }
+
+    // Track non-event transactions
+    nonEventTransactions.add(transId);
+    totalRevenueExcludingEvents += sales;
+
+    // Add to appropriate category
+    if (majorCategories.hasOwnProperty(majorCategory)) {
+      majorCategories[majorCategory] += sales;
+    } else {
+      // Fallback: any unrecognized category goes to Miscellaneous
+      majorCategories["Miscellaneous"] += sales;
+    }
+
+    // Track F&B transactions
+    if (majorCategory === "Food" || majorCategory === "Beverage") {
+      transactionsWithFB.add(transId);
     }
   }
-  
+
+  var transCountExcludingEvents = nonEventTransactions.size;
+
+  // Calculate F&B metrics
   var totalFBRevenue = majorCategories["Food"] + majorCategories["Beverage"];
   var fbPercent = totalRevenueExcludingEvents > 0 ? (totalFBRevenue / totalRevenueExcludingEvents * 100).toFixed(1) : "0.0";
   var avgFBPerTransaction = transCountExcludingEvents > 0 ? totalFBRevenue / transCountExcludingEvents : 0;
   var fbAttachRate = transCountExcludingEvents > 0 ? (transactionsWithFB.size / transCountExcludingEvents * 100).toFixed(1) : "0.0";
-  
+
   return {
     foodRevenue: majorCategories["Food"].toFixed(2),
     beverageRevenue: majorCategories["Beverage"].toFixed(2),
@@ -766,7 +863,11 @@ function getCategoryMetrics() {
     totalFBRevenue: totalFBRevenue.toFixed(2),
     fbPercent: fbPercent,
     avgFBPerTrans: avgFBPerTransaction.toFixed(2),
-    fbAttachRate: fbAttachRate
+    fbAttachRate: fbAttachRate,
+    // Export category sum for verification
+    _categorySum: (majorCategories["Food"] + majorCategories["Beverage"] + majorCategories["Golf"] +
+                   majorCategories["Membership"] + majorCategories["Miscellaneous"]).toFixed(2),
+    _totalExclEvents: totalRevenueExcludingEvents.toFixed(2)
   };
 }
 
